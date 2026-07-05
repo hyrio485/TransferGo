@@ -79,7 +79,7 @@ func TestVideoSortedFramePaths(t *testing.T) {
 	}
 }
 
-func TestVideoResolveFFmpegPath(t *testing.T) {
+func TestVideoResolveFfmpegPath(t *testing.T) {
 	ctx := newVideoContext()
 	ctx.getenv = func(key string) string {
 		if key == "FFMPEG_PATH" {
@@ -88,20 +88,20 @@ func TestVideoResolveFFmpegPath(t *testing.T) {
 		return ""
 	}
 
-	if got := ctx.resolveFFmpegPath("/flag/ffmpeg"); got != "/flag/ffmpeg" {
+	if got := ctx.resolveFfmpegPath("/flag/ffmpeg"); got != "/flag/ffmpeg" {
 		t.Fatalf("explicit ffmpeg path = %q, want /flag/ffmpeg", got)
 	}
-	if got := ctx.resolveFFmpegPath(""); got != "/env/ffmpeg" {
+	if got := ctx.resolveFfmpegPath(""); got != "/env/ffmpeg" {
 		t.Fatalf("env ffmpeg path = %q, want /env/ffmpeg", got)
 	}
 
 	ctx.getenv = func(string) string { return "" }
-	if got := ctx.resolveFFmpegPath(""); got != "ffmpeg" {
+	if got := ctx.resolveFfmpegPath(""); got != "ffmpeg" {
 		t.Fatalf("default ffmpeg path = %q, want ffmpeg", got)
 	}
 }
 
-func TestVideoEncodeFFmpegCommand(t *testing.T) {
+func TestVideoEncodeFfmpegCommand(t *testing.T) {
 	ctx := newVideoContext()
 	ctx.lookPath = func(name string) (string, error) {
 		if name != "ffmpeg" {
@@ -117,7 +117,7 @@ func TestVideoEncodeFFmpegCommand(t *testing.T) {
 		return nil
 	}
 
-	err := ctx.encodeVideoWithFFmpeg("", "frames", "out.mp4", 29.97, 23)
+	err := ctx.encodeVideoWithFfmpeg("", "frames", "out.mp4", 29.97, 23)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,13 +141,13 @@ func TestVideoEncodeFFmpegCommand(t *testing.T) {
 	}
 }
 
-func TestVideoEncodeFFmpegReportsMissingCommand(t *testing.T) {
+func TestVideoEncodeFfmpegReportsMissingCommand(t *testing.T) {
 	ctx := newVideoContext()
 	ctx.lookPath = func(string) (string, error) {
 		return "", errors.New("not found")
 	}
 
-	err := ctx.encodeVideoWithFFmpeg("", "frames", "out.mp4", 1, 24)
+	err := ctx.encodeVideoWithFfmpeg("", "frames", "out.mp4", 1, 24)
 	if err == nil || !strings.Contains(err.Error(), "ffmpeg not found") {
 		t.Fatalf("encode error = %v, want ffmpeg not found", err)
 	}

@@ -7,8 +7,7 @@ import (
 )
 
 func main() {
-	// Keep OS-facing behavior at the boundary: the core package returns errors,
-	// while main decides how they are printed and which process status to use.
+	// 把面向操作系统的行为留在边界：core 包返回错误，main 决定如何打印错误以及使用哪种进程状态。
 	if err := core.Run(os.Args[1:]); err != nil {
 		core.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

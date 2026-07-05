@@ -8,17 +8,14 @@ import (
 	"time"
 )
 
-// commandContext owns CLI-facing streams and time. It parses flags without
-// depending on protocol, QR, or video implementation details.
+// commandContext 持有面向 CLI 的流和时间。它解析参数，不依赖协议、二维码或视频实现细节。
 type commandContext struct {
 	stdout io.Writer
 	stderr io.Writer
 	now    func() time.Time
 }
 
-// encodeOptions mirrors the encode command flags after parsing. Keeping all
-// user-controlled values in one struct makes the validation and pipeline order
-// easy to audit.
+// encodeOptions 对应 encode 命令解析后的参数。把所有用户可控值放在一个结构中，便于审查校验和流水线顺序。
 type encodeOptions struct {
 	input       string
 	output      string
@@ -36,9 +33,7 @@ type encodeOptions struct {
 	keep        bool
 }
 
-// decodeOptions mirrors the decode command flags after parsing. The decode
-// path accepts partial and noisy frame extraction results, so these options are
-// kept separate from encode even when the names overlap.
+// decodeOptions 对应 decode 命令解析后的参数。decode 路径会接受不完整且有噪声的抽帧结果，所以即使名称重叠，也和 encode 参数分开保存。
 type decodeOptions struct {
 	input     string
 	output    string
@@ -51,9 +46,7 @@ type decodeOptions struct {
 	keep      bool
 }
 
-// newCommandContext wires command output streams and the clock used by progress
-// throttling. Keeping these injectable makes CLI behavior straightforward to
-// test without touching global stdout, stderr, or time.
+// newCommandContext 连接命令输出流和用于进度节流的时钟。保持这些依赖可注入，让 CLI 行为测试无需触碰全局 stdout、stderr 或时间。
 func newCommandContext(stdout io.Writer, stderr io.Writer) commandContext {
 	return commandContext{
 		stdout: stdout,
@@ -62,8 +55,7 @@ func newCommandContext(stdout io.Writer, stderr io.Writer) commandContext {
 	}
 }
 
-// parseEncodeOptions parses only encode flags and validates values that would
-// make the encode pipeline fail later with less helpful errors.
+// parseEncodeOptions 只解析 encode 参数，并校验那些若留到编码流水线后面才失败会更难理解的值。
 func (ctx commandContext) parseEncodeOptions(args []string, defaults encodeOptions) (encodeOptions, error) {
 	fs := flag.NewFlagSet("encode", flag.ContinueOnError)
 	fs.SetOutput(ctx.stderr)
@@ -125,8 +117,7 @@ func (ctx commandContext) parseEncodeOptions(args []string, defaults encodeOptio
 	return opt, nil
 }
 
-// parseDecodeOptions parses only decode flags and validates the options needed
-// before ffmpeg extraction or frame recovery can start.
+// parseDecodeOptions 只解析 decode 参数，并校验 ffmpeg 抽帧或帧恢复开始前所需的选项。
 func (ctx commandContext) parseDecodeOptions(args []string, defaults decodeOptions) (decodeOptions, error) {
 	fs := flag.NewFlagSet("decode", flag.ContinueOnError)
 	fs.SetOutput(ctx.stderr)
@@ -160,8 +151,7 @@ func (ctx commandContext) parseDecodeOptions(args []string, defaults decodeOptio
 	return opt, nil
 }
 
-// printUsage intentionally stays short: detailed command flags live on the
-// command-specific FlagSet help, while this text helps users pick a subcommand.
+// printUsage 有意保持简短：详细命令参数放在各命令自己的 FlagSet 帮助中，这段文本只帮助选择子命令。
 func (ctx commandContext) printUsage(w io.Writer) {
 	Fprint(w, `usage:
   transfergo encode -i <file> -o <video.mp4> [-p <password>]
@@ -173,8 +163,7 @@ commands:
 `)
 }
 
-// newProgressPrinter throttles progress output so long scans stay visible
-// without printing one line per frame on fast machines.
+// newProgressPrinter 对进度输出做节流，让长扫描仍然可见，同时避免在快机器上每帧打印一行。
 func (ctx commandContext) newProgressPrinter(label string) func(done int, total int) {
 	var last time.Time
 	return func(done int, total int) {

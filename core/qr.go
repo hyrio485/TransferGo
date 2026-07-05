@@ -16,36 +16,29 @@ import (
 	qrdecoder "github.com/makiuchi-d/gozxing/qrcode/decoder"
 )
 
-// pointF stores a floating-point image coordinate used while approximating a
-// filmed screen quadrilateral before warping it back into a square.
+// pointF 存储浮点图片坐标，用于在把拍摄到的屏幕四边形扭正为正方形前进行近似。
 type pointF struct {
 	x float64
 	y float64
 }
 
 const (
-	// A smaller QR margin increases payload density without removing the quiet
-	// zone entirely. Two modules is a practical compromise for filmed screens.
+	// 较小的二维码边距可以提高载荷密度，同时不完全移除静区。两个模块是屏幕拍摄场景中的实用折中。
 	qrEncodeMargin     = 2
 	qrQuietZoneModules = qrEncodeMargin * 2
-	// qrCanvasWhite and qrGuideBlack are fixed grayscale anchors used for the
-	// generated video canvas and tile borders.
+	// qrCanvasWhite 和 qrGuideBlack 是固定灰度锚点，用于生成的视频画布和格子边框。
 	qrCanvasWhite = 255
 	qrGuideBlack  = 16
-	// qrGuideWidth makes each tile visible to both humans and simple contrast
-	// detection without crowding the QR quiet zone.
+	// qrGuideWidth 让每个格子对人眼和简单对比度检测都可见，同时不挤占二维码静区。
 	qrGuideWidth = 6
-	// High-contrast sampling is used only to find likely QR regions inside a
-	// larger camera frame; the actual QR decoder still validates the payload.
+	// 高对比度采样只用于在更大的相机画面中寻找可能的二维码区域；实际二维码解码器仍会校验载荷。
 	qrContrastDistance      = 96
 	qrContrastSampleMinimum = 24
-	// qrWarpPadding expands the estimated screen quadrilateral slightly so
-	// clipped QR borders are more likely to survive the perspective warp.
+	// qrWarpPadding 会略微扩展估计出的屏幕四边形，让被裁切的二维码边框更可能在透视扭正后保留下来。
 	qrWarpPadding = 1.14
 )
 
-// qrRenderOptions collects the geometry that both encoding and validation need
-// when multiple QR payloads are packed into one video frame.
+// qrRenderOptions 收集几何参数，供多个二维码载荷打包进一个视频帧时的编码和校验共同使用。
 type qrRenderOptions struct {
 	qrSize      int
 	qrVersion   int
@@ -54,8 +47,7 @@ type qrRenderOptions struct {
 	gridSize    int
 }
 
-// validate rejects render options that would make QR codes too small to encode
-// or too large to fit inside the requested grid.
+// validate 拒绝那些会让二维码小到无法编码，或大到无法放入指定网格的渲染选项。
 func (opt qrRenderOptions) validate() error {
 	if opt.qrSize <= 0 {
 		return fmt.Errorf("-qr-size must be greater than 0")
@@ -82,25 +74,22 @@ func (opt qrRenderOptions) validate() error {
 	return nil
 }
 
-// slotsPerImage returns how many protocol frames fit in one rendered video
-// image for the current grid size.
+// slotsPerImage 返回在当前网格大小下，一张渲染后视频图片能容纳多少协议帧。
 func (opt qrRenderOptions) slotsPerImage() int {
 	return opt.gridSize * opt.gridSize
 }
 
-// minTileSize returns the limiting tile side in pixels, accounting for non-even
-// divisions of the output canvas.
+// minTileSize 返回限制性的格子边长，单位为像素，并考虑输出画布无法均匀整除的情况。
 func (opt qrRenderOptions) minTileSize() int {
 	return minInt(opt.videoWidth/opt.gridSize, opt.videoHeight/opt.gridSize)
 }
 
-// effectiveQRSize clamps the requested QR size to the available tile size so a
-// user can request a generous size without overflowing the grid.
+// effectiveQRSize 把请求的二维码尺寸限制到可用格子尺寸内，让用户可以请求偏大的尺寸而不溢出网格。
 func (opt qrRenderOptions) effectiveQRSize() int {
 	return minInt(opt.qrSize, opt.minTileSize())
 }
 
-// tileRect returns the exact canvas rectangle for one zero-based grid slot.
+// tileRect 返回某个从 0 开始的网格槽位在画布上的精确矩形。
 func (opt qrRenderOptions) tileRect(tile int) image.Rectangle {
 	row := tile / opt.gridSize
 	col := tile % opt.gridSize
@@ -112,8 +101,7 @@ func (opt qrRenderOptions) tileRect(tile int) image.Rectangle {
 	)
 }
 
-// renderedFrameCount computes the PNG count needed to hold all protocol frames
-// once the grid packing factor is applied.
+// renderedFrameCount 计算应用网格打包系数后，容纳所有协议帧需要多少张 PNG。
 func renderedFrameCount(protocolFrames int, opt qrRenderOptions) int {
 	if protocolFrames <= 0 {
 		return 0
@@ -122,9 +110,7 @@ func renderedFrameCount(protocolFrames int, opt qrRenderOptions) int {
 	return (protocolFrames + slots - 1) / slots
 }
 
-// writeQRPayloadFrames serializes each payload into a zero-padded PNG sequence.
-// The file naming convention is chosen to match ffmpeg's frame_%06d.png input
-// pattern and to keep lexicographic sorting equal to frame order.
+// writeQRPayloadFrames 把每个载荷序列化为带零填充的 PNG 序列。文件命名约定用于匹配 ffmpeg 的 frame_%06d.png 输入模式，并让字典序排序等同于帧顺序。
 func writeQRPayloadFrames(payloads [][]byte, dir string, opt qrRenderOptions, progress func(done int, total int)) error {
 	if err := opt.validate(); err != nil {
 		return fmt.Errorf("validate QR render options: %w", err)
@@ -162,9 +148,7 @@ func writeQRPayloadFrames(payloads [][]byte, dir string, opt qrRenderOptions, pr
 	return nil
 }
 
-// encodeQRPNG stores arbitrary bytes in a QR code. gozxing's writer accepts
-// text, so bytes are mapped through ISO-8859-1 where every byte value maps to
-// the same code point. Error correction level L is used to maximize capacity.
+// encodeQRPNG 把任意字节存入二维码。gozxing 的写入器接收文本，因此字节会通过 ISO-8859-1 映射，其中每个字节值都映射到相同编号的码点。使用纠错等级 L 以最大化容量。
 func encodeQRPNG(payload []byte, size int, version int) ([]byte, error) {
 	img, err := encodeQRGray(payload, size, version)
 	if err != nil {
@@ -177,8 +161,7 @@ func encodeQRPNG(payload []byte, size int, version int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// encodeQRGray creates the raw grayscale QR bitmap used by both validation and
-// PNG rendering. It keeps payload encoding separate from file I/O.
+// encodeQRGray 创建用于校验和 PNG 渲染的原始灰度二维码位图。它让载荷编码和文件 I/O 保持分离。
 func encodeQRGray(payload []byte, size int, version int) (*image.Gray, error) {
 	content := bytesToLatin1String(payload)
 	hints := map[gozxing.EncodeHintType]interface{}{
@@ -198,8 +181,7 @@ func encodeQRGray(payload []byte, size int, version int) (*image.Gray, error) {
 	return bitMatrixToGray(matrix), nil
 }
 
-// bitMatrixToGray converts the QR bit matrix into a plain black-on-white image.
-// A grayscale image is compact, deterministic, and sufficient for PNG output.
+// bitMatrixToGray 把二维码位矩阵转换成普通黑白图片。灰度图片紧凑、确定，并且足够用于 PNG 输出。
 func bitMatrixToGray(matrix *gozxing.BitMatrix) *image.Gray {
 	bounds := image.Rect(0, 0, matrix.GetWidth(), matrix.GetHeight())
 	img := image.NewGray(bounds)
@@ -216,9 +198,7 @@ func bitMatrixToGray(matrix *gozxing.BitMatrix) *image.Gray {
 	return img
 }
 
-// newMosaicCanvas creates a white RGBA canvas large enough to hold a full QR
-// grid. RGBA is used here because later drawing code writes directly into
-// pixel channels for speed and deterministic output.
+// newMosaicCanvas 创建一张白色 RGBA 画布，大小足以容纳完整二维码网格。这里使用 RGBA，是因为后续绘制代码会直接写入像素通道，以获得速度和确定性输出。
 func newMosaicCanvas(width int, height int) *image.RGBA {
 	bounds := image.Rect(0, 0, width, height)
 	img := image.NewRGBA(bounds)
@@ -227,16 +207,14 @@ func newMosaicCanvas(width int, height int) *image.RGBA {
 	return img
 }
 
-// drawMosaicGuides outlines each tile so filmed frames have strong rectangular
-// contrast that can be rediscovered during decode.
+// drawMosaicGuides 为每个格子描边，让拍摄后的帧具有强矩形对比度，便于解码时重新发现。
 func drawMosaicGuides(dst *image.RGBA, opt qrRenderOptions) {
 	for tile := 0; tile < opt.gridSize*opt.gridSize; tile++ {
 		drawTileGuide(dst, opt.tileRect(tile))
 	}
 }
 
-// drawTileGuide paints a simple dark border around one tile. Very small tiles
-// skip the guide because the border would consume too much QR space.
+// drawTileGuide 在一个格子周围绘制简单深色边框。非常小的格子会跳过引导边框，因为边框会占用过多二维码空间。
 func drawTileGuide(dst *image.RGBA, rect image.Rectangle) {
 	guide := qrGuideWidth
 	if rect.Dx() < guide*6 || rect.Dy() < guide*6 {
@@ -252,9 +230,7 @@ func drawTileGuide(dst *image.RGBA, rect image.Rectangle) {
 	}
 }
 
-// drawQRIntoTile centers one plain black-and-white QR code inside a tile.
-// Monochrome output gives the camera a higher-contrast target than the old RGB
-// channel overlay, which was dense but fragile after screen filming.
+// drawQRIntoTile 把一个普通黑白二维码居中绘制到格子中。单色输出比旧的 RGB 通道叠加给相机提供更高对比度的目标；旧方案密度高，但经过屏幕拍摄后很脆弱。
 func drawQRIntoTile(dst *image.RGBA, qr *image.Gray, tile image.Rectangle) error {
 	qrBounds := qr.Bounds()
 	qrWidth := qrBounds.Dx()
@@ -280,8 +256,7 @@ func drawQRIntoTile(dst *image.RGBA, qr *image.Gray, tile image.Rectangle) error
 	return nil
 }
 
-// decodeQRCodePayloads loads one extracted image and returns every unique QR
-// payload found by the layered decode strategy.
+// decodeQRCodePayloads 加载一张抽取出的图片，并返回分层解码策略找到的每个唯一二维码载荷。
 func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -303,9 +278,7 @@ func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
 	return payloads, nil
 }
 
-// decodeQRCodePayloadsFromImage tries the whole image first, then cropped and
-// warped candidates. This keeps perfect generated frames fast while giving
-// filmed or tilted captures extra recovery attempts.
+// decodeQRCodePayloadsFromImage 先尝试整张图片，再尝试裁剪和扭正后的候选区域。这样能让完美生成的帧保持快速，同时给拍摄或倾斜捕获提供额外恢复机会。
 func decodeQRCodePayloadsFromImage(img image.Image, gridSize int) [][]byte {
 	if gridSize <= 0 {
 		gridSize = defaultGridSize
@@ -335,8 +308,7 @@ func decodeQRCodePayloadsFromImage(img image.Image, gridSize int) [][]byte {
 	return acc.payloads
 }
 
-// addSingleDecode tries the ordinary QR reader and records the payload if it
-// succeeds. Decode failures are expected for many candidate crops.
+// addSingleDecode 尝试普通二维码读取器，并在成功时记录载荷。很多候选裁剪区域解码失败是预期情况。
 func addSingleDecode(acc *payloadAccumulator, img image.Image) {
 	payload, err := decodeQRCodeBytesFromImage(img)
 	if err == nil {
@@ -344,8 +316,7 @@ func addSingleDecode(acc *payloadAccumulator, img image.Image) {
 	}
 }
 
-// addMultipleDecode uses the multi-QR reader for full mosaics or larger crops
-// that may contain several QR codes at once.
+// addMultipleDecode 对完整拼图或较大裁剪区域使用多二维码读取器，因为其中可能同时包含多个二维码。
 func addMultipleDecode(acc *payloadAccumulator, img image.Image) {
 	payloads, err := decodeMultipleQRCodeBytesFromImage(img)
 	if err != nil {
@@ -356,9 +327,7 @@ func addMultipleDecode(acc *payloadAccumulator, img image.Image) {
 	}
 }
 
-// decodeQRCodeBytesFromImage reverses encodeQRPNG. Some QR decoders expose
-// original byte segments directly; when they do not, the Latin-1 text mapping
-// is used as a fallback to recover the exact protocol bytes.
+// decodeQRCodeBytesFromImage 反向执行 encodeQRPNG。有些二维码解码器会直接暴露原始字节段；如果没有，就回退到 Latin-1 文本映射来恢复精确协议字节。
 func decodeQRCodeBytesFromImage(img image.Image) ([]byte, error) {
 	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
 	if err != nil {
@@ -372,8 +341,7 @@ func decodeQRCodeBytesFromImage(img image.Image) ([]byte, error) {
 	return qrResultBytes(result)
 }
 
-// decodeMultipleQRCodeBytesFromImage decodes every QR code the multi-reader can
-// identify in one image candidate.
+// decodeMultipleQRCodeBytesFromImage 解码多二维码读取器能在一个图片候选区域中识别出的每个二维码。
 func decodeMultipleQRCodeBytesFromImage(img image.Image) ([][]byte, error) {
 	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
 	if err != nil {
@@ -394,11 +362,9 @@ func decodeMultipleQRCodeBytesFromImage(img image.Image) ([][]byte, error) {
 	return payloads, nil
 }
 
-// qrDecodeHints centralizes gozxing decode options so single and multi readers
-// interpret TransferGo payloads the same way.
+// qrDecodeHints 集中管理 gozxing 解码选项，让单二维码和多二维码读取器以相同方式解释 TransferGo 载荷。
 func qrDecodeHints() map[gozxing.DecodeHintType]interface{} {
-	// TRY_HARDER costs more CPU but is useful for frames extracted from filmed
-	// video, where blur, scaling, and compression artifacts are common.
+	// TRY_HARDER 会消耗更多 CPU，但对从拍摄视频中抽取的帧很有用，因为这类帧常有模糊、缩放和压缩伪影。
 	return map[gozxing.DecodeHintType]interface{}{
 		gozxing.DecodeHintType_CHARACTER_SET:    "ISO-8859-1",
 		gozxing.DecodeHintType_POSSIBLE_FORMATS: gozxing.BarcodeFormats{gozxing.BarcodeFormat_QR_CODE},
@@ -406,11 +372,9 @@ func qrDecodeHints() map[gozxing.DecodeHintType]interface{} {
 	}
 }
 
-// qrResultBytes extracts exact protocol bytes from a gozxing result, preferring
-// byte segments over text because the payload is binary data.
+// qrResultBytes 从 gozxing 结果中提取精确协议字节。由于载荷是二进制数据，所以优先使用字节段而非文本。
 func qrResultBytes(result *gozxing.Result) ([]byte, error) {
-	// Prefer raw byte segments when available. This avoids any ambiguity in text
-	// conversion and is the most faithful representation of the QR payload.
+	// 可用时优先使用原始字节段。这样能避免文本转换中的歧义，也是二维码载荷最忠实的表示。
 	if metadata := result.GetResultMetadata(); metadata != nil {
 		if raw, ok := metadata[gozxing.ResultMetadataType_BYTE_SEGMENTS]; ok {
 			if segments, ok := raw.([][]byte); ok && len(segments) > 0 {
@@ -426,19 +390,18 @@ func qrResultBytes(result *gozxing.Result) ([]byte, error) {
 	return latin1StringToBytes(result.GetText())
 }
 
-// payloadAccumulator keeps decode retries from returning the same QR payload
-// multiple times when several candidate crops overlap.
+// payloadAccumulator 避免多个候选裁剪区域重叠时，解码重试多次返回同一个二维码载荷。
 type payloadAccumulator struct {
 	seen     map[string]struct{}
 	payloads [][]byte
 }
 
-// newPayloadAccumulator starts an empty de-duplicating payload collector.
+// newPayloadAccumulator 启动一个空的去重载荷收集器。
 func newPayloadAccumulator() *payloadAccumulator {
 	return &payloadAccumulator{seen: make(map[string]struct{})}
 }
 
-// add stores a defensive copy of a payload if it has not already been seen.
+// add 在载荷尚未出现过时，存储它的防御性副本。
 func (acc *payloadAccumulator) add(payload []byte) {
 	key := string(payload)
 	if _, ok := acc.seen[key]; ok {
@@ -448,9 +411,7 @@ func (acc *payloadAccumulator) add(payload []byte) {
 	acc.payloads = append(acc.payloads, append([]byte{}, payload...))
 }
 
-// imageToGray makes black-white QR detection deterministic. It also avoids the
-// expensive old behavior of trying the same camera frame as three color
-// channels, which no longer helps now that encoding is monochrome.
+// imageToGray 让黑白二维码检测保持确定性。它也避免旧方案中把同一相机帧作为三个颜色通道分别尝试的昂贵行为；现在编码已经是单色，这种做法不再有帮助。
 func imageToGray(src image.Image, rect image.Rectangle) *image.Gray {
 	rect = rect.Intersect(src.Bounds())
 	dst := image.NewGray(image.Rect(0, 0, rect.Dx(), rect.Dy()))
@@ -467,8 +428,7 @@ func imageToGray(src image.Image, rect image.Rectangle) *image.Gray {
 	return dst
 }
 
-// cropGray copies one grayscale candidate region into a zero-based image so the
-// QR decoder does not need to handle source-coordinate offsets.
+// cropGray 把一个灰度候选区域复制到从零开始的图片中，让二维码解码器无需处理源坐标偏移。
 func cropGray(src *image.Gray, rect image.Rectangle) *image.Gray {
 	rect = rect.Intersect(src.Bounds())
 	dst := image.NewGray(image.Rect(0, 0, rect.Dx(), rect.Dy()))
@@ -476,9 +436,7 @@ func cropGray(src *image.Gray, rect image.Rectangle) *image.Gray {
 	return dst
 }
 
-// decodeCandidateRects returns square-ish regions worth retrying when the whole
-// frame decode fails. The generated canvas is square, but phone recordings may
-// include surrounding screen or camera background.
+// decodeCandidateRects 在整帧解码失败时返回值得重试的近似正方形区域。生成的画布是正方形，但手机录像可能包含周围屏幕或相机背景。
 func decodeCandidateRects(img image.Image) []image.Rectangle {
 	bounds := img.Bounds()
 	rects := []image.Rectangle{bounds}
@@ -489,8 +447,7 @@ func decodeCandidateRects(img image.Image) []image.Rectangle {
 	return rects
 }
 
-// appendUniqueRect keeps the candidate list compact so the same crop is not
-// decoded repeatedly.
+// appendUniqueRect 让候选列表保持紧凑，避免反复解码同一个裁剪区域。
 func appendUniqueRect(rects []image.Rectangle, rect image.Rectangle) []image.Rectangle {
 	if rect.Empty() {
 		return rects
@@ -503,8 +460,7 @@ func appendUniqueRect(rects []image.Rectangle, rect image.Rectangle) []image.Rec
 	return append(rects, rect)
 }
 
-// centeredSquare is the cheapest fallback crop for recordings that preserve the
-// video in the middle of a wider camera frame.
+// centeredSquare 是最低成本的回退裁剪，用于视频位于更宽相机画面中央的录像。
 func centeredSquare(bounds image.Rectangle) image.Rectangle {
 	side := minInt(bounds.Dx(), bounds.Dy())
 	x0 := bounds.Min.X + (bounds.Dx()-side)/2
@@ -512,9 +468,7 @@ func centeredSquare(bounds image.Rectangle) image.Rectangle {
 	return image.Rect(x0, y0, x0+side, y0+side)
 }
 
-// contrastContentSquare estimates where the QR mosaic sits inside a filmed
-// frame. It looks for very dark or very bright samples, then expands the result
-// into a square because the generated video canvas is square.
+// contrastContentSquare 估计二维码拼图在拍摄帧中的位置。它寻找非常暗或非常亮的采样点，然后把结果扩展成正方形，因为生成的视频画布是正方形。
 func contrastContentSquare(img image.Image) (image.Rectangle, bool) {
 	bounds := img.Bounds()
 	step := maxInt(1, minInt(bounds.Dx(), bounds.Dy())/500)
@@ -543,10 +497,7 @@ func contrastContentSquare(img image.Image) (image.Rectangle, bool) {
 	return squareAroundRect(expandRect(rect, padding, bounds), bounds), true
 }
 
-// contrastContentWarp uses the high-contrast extremes as a rough quadrilateral
-// and maps that shape back into a square. It is deliberately approximate: phone
-// recordings do not provide the real screen geometry, but this often rescues
-// mildly tilted captures.
+// contrastContentWarp 使用高对比度极值点作为粗略四边形，并把该形状映射回正方形。它有意保持近似：手机录像不会提供真实屏幕几何，但这通常能挽救轻微倾斜的捕获。
 func contrastContentWarp(img image.Image) (image.Image, bool) {
 	bounds := img.Bounds()
 	step := maxInt(1, minInt(bounds.Dx(), bounds.Dy())/700)
@@ -596,8 +547,7 @@ func contrastContentWarp(img image.Image) (image.Image, bool) {
 	return warpQuadToSquare(img, quad, side), true
 }
 
-// expandQuad grows a detected quadrilateral away from its center to recover
-// QR quiet zones that might sit just outside the contrast extrema.
+// expandQuad 让检测到的四边形从中心向外扩张，以恢复可能刚好位于对比度极值之外的二维码静区。
 func expandQuad(quad [4]pointF, scale float64) [4]pointF {
 	var center pointF
 	for _, p := range quad {
@@ -615,8 +565,7 @@ func expandQuad(quad [4]pointF, scale float64) [4]pointF {
 	return quad
 }
 
-// warpQuadToSquare samples an approximate screen quadrilateral into a square
-// image, giving the QR decoder a front-facing candidate.
+// warpQuadToSquare 把近似屏幕四边形采样成正方形图片，为二维码解码器提供正面候选图。
 func warpQuadToSquare(src image.Image, quad [4]pointF, side int) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, side, side))
 	for y := 0; y < side; y++ {
@@ -630,8 +579,7 @@ func warpQuadToSquare(src image.Image, quad [4]pointF, side int) *image.RGBA {
 	return dst
 }
 
-// bilinearPoint maps normalized square coordinates into the source
-// quadrilateral used by warpQuadToSquare.
+// bilinearPoint 把归一化正方形坐标映射到 warpQuadToSquare 使用的源四边形中。
 func bilinearPoint(quad [4]pointF, u float64, v float64) pointF {
 	tl, tr, br, bl := quad[0], quad[1], quad[2], quad[3]
 	return pointF{
@@ -640,8 +588,7 @@ func bilinearPoint(quad [4]pointF, u float64, v float64) pointF {
 	}
 }
 
-// sampleImageNearest reads the closest source pixel and returns white for
-// out-of-bounds samples so warped edges remain scanner-friendly.
+// sampleImageNearest 读取最近的源像素；对越界采样返回白色，让扭正后的边缘更利于扫描。
 func sampleImageNearest(img image.Image, x float64, y float64) color.Color {
 	bounds := img.Bounds()
 	ix := int(x + 0.5)
@@ -652,14 +599,12 @@ func sampleImageNearest(img image.Image, x float64, y float64) color.Color {
 	return img.At(ix, iy)
 }
 
-// luminance converts 16-bit RGBA color channels into an 8-bit perceptual
-// brightness value used by contrast detection.
+// luminance 把 16 位 RGBA 颜色通道转换为 8 位感知亮度值，供对比度检测使用。
 func luminance(r uint32, g uint32, b uint32) uint8 {
 	return uint8((299*int(r>>8) + 587*int(g>>8) + 114*int(b>>8)) / 1000)
 }
 
-// isHighContrastPixel reports whether a pixel is close enough to black or white
-// to plausibly belong to a QR mosaic or guide border.
+// isHighContrastPixel 判断一个像素是否足够接近黑色或白色，从而可能属于二维码拼图或引导边框。
 func isHighContrastPixel(c color.Color) bool {
 	r, g, b, a := c.RGBA()
 	if a == 0 {
@@ -669,13 +614,12 @@ func isHighContrastPixel(c color.Color) bool {
 	return value <= qrContrastDistance || value >= 255-qrContrastDistance
 }
 
-// expandRect pads a candidate rectangle while keeping it inside image bounds.
+// expandRect 在保持候选矩形位于图片边界内的同时为其添加 padding。
 func expandRect(rect image.Rectangle, padding int, bounds image.Rectangle) image.Rectangle {
 	return image.Rect(rect.Min.X-padding, rect.Min.Y-padding, rect.Max.X+padding, rect.Max.Y+padding).Intersect(bounds)
 }
 
-// squareAroundRect expands a candidate to a bounded square because generated
-// TransferGo videos use square canvases.
+// squareAroundRect 把候选区域扩展为受边界限制的正方形，因为生成的 TransferGo 视频使用正方形画布。
 func squareAroundRect(rect image.Rectangle, bounds image.Rectangle) image.Rectangle {
 	side := maxInt(rect.Dx(), rect.Dy())
 	side = minInt(side, minInt(bounds.Dx(), bounds.Dy()))
@@ -698,8 +642,7 @@ func squareAroundRect(rect image.Rectangle, bounds image.Rectangle) image.Rectan
 	return image.Rect(x0, y0, x0+side, y0+side)
 }
 
-// gridCellRects splits one candidate image into the same grid layout used while
-// encoding, allowing each tile to be decoded independently.
+// gridCellRects 把一张候选图片切成编码时使用的相同网格布局，让每个格子都可以独立解码。
 func gridCellRects(bounds image.Rectangle, gridSize int) []image.Rectangle {
 	rects := make([]image.Rectangle, 0, gridSize*gridSize)
 	for row := 0; row < gridSize; row++ {
@@ -715,8 +658,7 @@ func gridCellRects(bounds image.Rectangle, gridSize int) []image.Rectangle {
 	return rects
 }
 
-// bytesToLatin1String maps each byte to the same-numbered rune so the QR writer
-// can carry binary protocol data through a string API without UTF-8 expansion.
+// bytesToLatin1String 把每个字节映射到相同编号的 rune，让二维码写入器能通过字符串 API 携带二进制协议数据，而不会发生 UTF-8 扩展。
 func bytesToLatin1String(data []byte) string {
 	runes := make([]rune, len(data))
 	for i, b := range data {
@@ -725,8 +667,7 @@ func bytesToLatin1String(data []byte) string {
 	return string(runes)
 }
 
-// latin1StringToBytes rejects any rune outside Latin-1 because such a value
-// could not have come from the byte-preserving mapping used by encodeQRPNG.
+// latin1StringToBytes 拒绝 Latin-1 之外的任何 rune，因为这样的值不可能来自 encodeQRPNG 使用的保字节映射。
 func latin1StringToBytes(text string) ([]byte, error) {
 	out := make([]byte, 0, len(text))
 	for _, r := range text {
@@ -738,8 +679,7 @@ func latin1StringToBytes(text string) ([]byte, error) {
 	return out, nil
 }
 
-// minRenderedQRSize returns the module count for a QR version plus the quiet
-// zone pixels required by the encoder margin.
+// minRenderedQRSize 返回某个二维码版本的模块数，加上编码器边距所需的静区像素。
 func minRenderedQRSize(version int) int {
 	return 21 + 4*(version-1) + qrQuietZoneModules*2
 }

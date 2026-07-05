@@ -15,73 +15,60 @@ import (
 )
 
 const (
-	// protocolVersion lets future readers reject incompatible QR payloads before
-	// attempting to parse the rest of the binary frame.
+	// protocolVersion 让未来的读取器能在尝试解析二进制帧其余部分前，拒绝不兼容的二维码载荷。
 	protocolVersion = byte(1)
 
-	// Serialized transfer frame layout, in bytes:
+	// 序列化传输帧布局，单位为字节：
 	//   0..3   magic "TGQR"
-	//   4      protocol version
-	//   5      flags
-	//   6      frame kind
-	//   7..10  sequence number, big-endian
-	//   11..14 total frame count, big-endian
-	//   15..16 body length, big-endian
-	//   17..   body bytes
+	//   4      协议版本
+	//   5      标志位
+	//   6      帧类型
+	//   7..10  序列号，big-endian
+	//   11..14 总帧数，big-endian
+	//   15..16 body 长度，big-endian
+	//   17..   body 字节
 	//
-	// The fixed header keeps every QR self-describing, so decode can collect
-	// frames from unordered images and still detect missing or foreign frames.
+	// 固定帧头让每个二维码都能自描述，因此 decode 可以从无序图片中收集帧，并仍能检测缺失帧或外来帧。
 	frameHeaderLen = 17
 	frameMagic     = "TGQR"
 
-	// frameFlagEncrypted means the frame body is protected by AES-GCM. For the
-	// manifest frame the body is salt || nonce || ciphertext || tag; for data
-	// frames it is nonce || ciphertext || tag.
+	// frameFlagEncrypted 表示帧 body 受 AES-GCM 保护。对 manifest 帧，body 是 salt || nonce || ciphertext || tag；对数据帧，body 是 nonce || ciphertext || tag。
 	frameFlagEncrypted = byte(1 << 0)
 
-	// Frame 0 is always the manifest. Data frames start at sequence 1, which
-	// lets the restore path verify metadata before accepting file bytes.
+	// 帧 0 始终是 manifest。数据帧从序列 1 开始，让还原路径能在接受文件字节前校验元数据。
 	frameKindManifest = byte(0)
 	frameKindData     = byte(1)
 
-	// Crypto parameters are fixed by the protocol. A 12-byte nonce is the GCM
-	// standard size, and a 32-byte key selects AES-256.
+	// 加密参数由协议固定。12 字节 nonce 是 GCM 标准大小，32 字节密钥表示使用 AES-256。
 	saltSize         = 16
 	nonceSize        = 12
 	aesKeySize       = 32
 	pbkdf2Iterations = 200_000
 
-	// maxFrameBodyLen matches the two-byte body length field in the frame
-	// header, so marshaling can fail fast before producing invalid bytes.
+	// maxFrameBodyLen 对应帧头中的两字节 body 长度字段，因此序列化能在产生无效字节前快速失败。
 	maxFrameBodyLen = 1<<16 - 1
 
-	// Manifest layout:
+	// Manifest 布局：
 	//   magic "TGM1"
-	//   password check marker
-	//   original file size
-	//   plaintext chunk size
-	//   plaintext chunk count
-	//   SHA-256 of the original file
-	//   file name length
-	//   file name bytes
+	//   密码检查标记
+	//   原始文件大小
+	//   明文分块大小
+	//   明文分块数量
+	//   原始文件的 SHA-256
+	//   文件名长度
+	//   文件名字节
 	manifestMagic = "TGM1"
 )
 
-// manifestPasswordCheck is deliberately included inside the manifest plaintext.
-// When the manifest is encrypted, a wrong password fails before any data frame
-// is processed. When it is not encrypted, the marker also rejects random QR data
-// that happens to have the manifest magic.
+// manifestPasswordCheck 被有意包含在 manifest 明文中。manifest 加密时，错误密码会在任何数据帧被处理前失败；未加密时，这个标记也能拒绝碰巧带有 manifest magic 的随机二维码数据。
 var manifestPasswordCheck = []byte("TG-PASS-OK-v1\x00\x00\x00")
 
-// protocolContext owns protocol dependencies. Random bytes are injectable so
-// encryption tests can stay deterministic without touching QR or app code.
+// protocolContext 持有协议依赖。随机字节可注入，因此加密测试可以保持确定性，而不触碰二维码或 app 代码。
 type protocolContext struct {
 	randomBytes func(int) ([]byte, error)
 }
 
-// transferFrame is the protocol unit stored in one QR code. The header fields
-// are authenticated when encryption is enabled, which prevents a valid encrypted
-// body from being moved to another sequence number or total frame count.
+// transferFrame 是存储在一个二维码中的协议单元。启用加密时，帧头字段也会被认证，防止有效的加密 body 被移动到另一个序列号或总帧数下。
 type transferFrame struct {
 	Flags byte
 	Kind  byte
@@ -90,9 +77,7 @@ type transferFrame struct {
 	Body  []byte
 }
 
-// manifest describes the original file and the expected stream shape. Decode
-// trusts it only after the frame collection, password check, and final SHA-256
-// verification have succeeded.
+// manifest 描述原始文件和预期的数据流形状。decode 只有在帧收集、密码检查和最终 SHA-256 校验成功后才信任它。
 type manifest struct {
 	FileName   string
 	FileSize   uint64
@@ -101,21 +86,18 @@ type manifest struct {
 	SHA256     [sha256.Size]byte
 }
 
-// newProtocolContext wires the production cryptographic random source.
+// newProtocolContext 连接生产环境的加密随机源。
 func newProtocolContext() protocolContext {
 	return protocolContext{randomBytes: cryptoRandomBytes}
 }
 
-// buildTransferFrames creates a manifest frame plus one data frame per chunk.
-// If password is non-empty, the manifest and all data chunks are encrypted with
-// a single key derived from that password and a per-video random salt.
+// buildTransferFrames 创建一个 manifest 帧和每个分块对应的一个数据帧。如果 password 非空，manifest 和所有数据分块都会用同一个密钥加密，该密钥由密码和每个视频随机生成的 salt 派生。
 func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, password string, chunkSize int) ([]transferFrame, manifest, error) {
 	if chunkSize <= 0 {
 		return nil, manifest{}, errors.New("chunk size must be greater than 0")
 	}
 
-	// Frame sequence 0 is reserved for the manifest, so the maximum data chunk
-	// count is one less than the uint32 sequence space.
+	// 帧序列 0 预留给 manifest，因此最大数据分块数量比 uint32 序列空间少 1。
 	chunkCount := uint64(0)
 	if len(input) > 0 {
 		chunkCount = uint64((len(input) + chunkSize - 1) / chunkSize)
@@ -142,8 +124,7 @@ func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, pa
 	var salt []byte
 	var gcm cipher.AEAD
 	if encrypted {
-		// The salt is stored only once, in the manifest frame. It is also folded
-		// into the AES-GCM AAD for every frame, binding all frames to one video.
+		// salt 只存储一次，位于 manifest 帧中。它也会被纳入每帧的 AES-GCM AAD，从而把所有帧绑定到同一个视频。
 		var err error
 		salt, err = ctx.randomBytes(saltSize)
 		if err != nil {
@@ -161,8 +142,7 @@ func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, pa
 	}
 
 	frames := make([]transferFrame, 0, total)
-	// Sequence 0 carries the metadata required to validate every data frame and
-	// the final file contents.
+	// 序列 0 携带校验每个数据帧和最终文件内容所需的元数据。
 	manifestFrame := transferFrame{
 		Flags: flags,
 		Kind:  frameKindManifest,
@@ -170,8 +150,7 @@ func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, pa
 		Total: total,
 	}
 	if encrypted {
-		// Store salt before the encrypted manifest so decoders can derive the
-		// key before calling AES-GCM Open.
+		// 把 salt 存在加密后的 manifest 前面，让解码器能在调用 AES-GCM Open 前派生密钥。
 		body, err := ctx.encryptFrameBody(gcm, manifestFrame, manifestPlain, salt)
 		if err != nil {
 			return nil, manifest{}, fmt.Errorf("encrypt manifest frame: %w", err)
@@ -182,8 +161,7 @@ func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, pa
 	}
 	frames = append(frames, manifestFrame)
 
-	// Data frames are numbered contiguously after the manifest. The restore path
-	// requires every sequence number, so missing frames are reported explicitly.
+	// 数据帧在 manifest 后连续编号。还原路径要求每个序列号都存在，因此会明确报告缺失帧。
 	for seq, offset := uint32(1), 0; offset < len(input); seq++ {
 		end := offset + chunkSize
 		if end > len(input) {
@@ -203,8 +181,7 @@ func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, pa
 			}
 			frame.Body = body
 		} else {
-			// Copy plaintext chunks so callers cannot mutate frames by changing
-			// the original input slice after this function returns.
+			// 复制明文分块，避免调用方在函数返回后通过修改原始输入切片来改变帧。
 			frame.Body = append([]byte{}, chunk...)
 		}
 		frames = append(frames, frame)
@@ -214,16 +191,13 @@ func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, pa
 	return frames, meta, nil
 }
 
-// restoreFromFrames verifies a collected frame set and returns the original
-// bytes. The function is intentionally strict: it rejects missing frames,
-// conflicting metadata, wrong passwords, bad hashes, and unexpected frame kinds.
+// restoreFromFrames 校验已收集的帧集合并返回原始字节。这个函数有意保持严格：会拒绝缺失帧、冲突元数据、错误密码、错误哈希和意外帧类型。
 func (ctx protocolContext) restoreFromFrames(frames map[uint32]transferFrame, total uint32, password string) (manifest, []byte, error) {
 	if total == 0 {
 		return manifest{}, nil, errors.New("no transfer frames found")
 	}
 
-	// The manifest is the root of trust for the stream shape. Without it there
-	// is no safe way to know the original size, chunk count, or file hash.
+	// manifest 是数据流形状的信任根。没有它，就无法安全得知原始大小、分块数量或文件哈希。
 	manifestFrame, ok := frames[0]
 	if !ok {
 		return manifest{}, nil, fmt.Errorf("missing frame(s): %s", formatMissingFrames(frames, total))
@@ -237,8 +211,7 @@ func (ctx protocolContext) restoreFromFrames(frames map[uint32]transferFrame, to
 	var gcm cipher.AEAD
 	var manifestPlain []byte
 	if encrypted {
-		// The manifest salt is required to derive the AES-GCM key. A successful
-		// decrypt also authenticates the password-check marker inside it.
+		// manifest salt 是派生 AES-GCM 密钥所必需的。成功解密也会认证其中的密码检查标记。
 		if password == "" {
 			return manifest{}, nil, errors.New("video is encrypted; provide -p")
 		}
@@ -269,8 +242,7 @@ func (ctx protocolContext) restoreFromFrames(frames map[uint32]transferFrame, to
 	if meta.ChunkCount != total-1 {
 		return manifest{}, nil, fmt.Errorf("manifest chunk count %d does not match frame total %d", meta.ChunkCount, total)
 	}
-	// Check completeness before assembling output, so failures point to the
-	// missing sequence numbers rather than a later hash mismatch.
+	// 在组装输出前检查完整性，让失败指向缺失的序列号，而不是后续的哈希不匹配。
 	for seq := uint32(0); seq < total; seq++ {
 		if _, ok := frames[seq]; !ok {
 			return manifest{}, nil, fmt.Errorf("missing frame(s): %s", formatMissingFrames(frames, total))
@@ -288,8 +260,7 @@ func (ctx protocolContext) restoreFromFrames(frames map[uint32]transferFrame, to
 		}
 		var chunk []byte
 		if encrypted {
-			// AAD includes kind, sequence, total, and salt, so frame bytes cannot
-			// be replayed in another position without failing authentication.
+			// AAD 包含类型、序列、总数和 salt，因此帧字节无法被重放到另一个位置而不触发认证失败。
 			chunk, err = decryptFrameBody(gcm, frame, frame.Body, salt)
 			if err != nil {
 				return manifest{}, nil, fmt.Errorf("decrypt frame %d: %w", seq, err)
@@ -303,8 +274,7 @@ func (ctx protocolContext) restoreFromFrames(frames map[uint32]transferFrame, to
 	}
 
 	result := output.Bytes()
-	// Size catches truncation or extra data; SHA-256 catches corruption even
-	// when the byte count happens to match.
+	// 大小检查能捕获截断或额外数据；即使字节数恰好匹配，SHA-256 也能捕获损坏。
 	if uint64(len(result)) != meta.FileSize {
 		return manifest{}, nil, fmt.Errorf("restored file size %d does not match manifest size %d", len(result), meta.FileSize)
 	}
@@ -316,15 +286,12 @@ func (ctx protocolContext) restoreFromFrames(frames map[uint32]transferFrame, to
 	return meta, result, nil
 }
 
-// marshalFrame serializes one transfer frame into the exact byte layout stored
-// in a QR payload. Oversized bodies panic because callers validate capacity
-// before rendering.
+// marshalFrame 把一个传输帧序列化为存入二维码载荷的精确字节布局。过大的 body 会触发 panic，因为调用方会在渲染前校验容量。
 func (ctx protocolContext) marshalFrame(frame transferFrame) []byte {
 	if len(frame.Body) > maxFrameBodyLen {
 		panic("frame body too large")
 	}
-	// Big-endian fields make the byte layout stable across platforms and easy
-	// to inspect with common binary tools.
+	// Big-endian 字段让字节布局跨平台稳定，并且便于用常见二进制工具检查。
 	out := make([]byte, frameHeaderLen+len(frame.Body))
 	copy(out[0:4], frameMagic)
 	out[4] = protocolVersion
@@ -337,8 +304,7 @@ func (ctx protocolContext) marshalFrame(frame transferFrame) []byte {
 	return out
 }
 
-// parseFrame reverses marshalFrame and validates enough structure to reject
-// unrelated QR codes before they can affect frame collection.
+// parseFrame 反向执行 marshalFrame，并校验足够的结构，以便在无关二维码影响帧收集前拒绝它们。
 func (ctx protocolContext) parseFrame(payload []byte) (transferFrame, error) {
 	if len(payload) < frameHeaderLen {
 		return transferFrame{}, errors.New("payload too short")
@@ -353,8 +319,7 @@ func (ctx protocolContext) parseFrame(payload []byte) (transferFrame, error) {
 	if len(payload) != frameHeaderLen+bodyLen {
 		return transferFrame{}, fmt.Errorf("frame length mismatch: header says %d body bytes, got %d", bodyLen, len(payload)-frameHeaderLen)
 	}
-	// Copy the body so the returned frame owns its bytes independently of the
-	// decoder buffer.
+	// 复制 body，让返回的帧独立持有自己的字节，不依赖解码器缓冲区。
 	frame := transferFrame{
 		Flags: payload[5],
 		Kind:  payload[6],
@@ -377,16 +342,14 @@ func (ctx protocolContext) parseFrame(payload []byte) (transferFrame, error) {
 	return frame, nil
 }
 
-// marshalManifest encodes metadata into a compact binary format that fits into
-// the same QR payload path as data frames.
+// marshalManifest 把元数据编码成紧凑的二进制格式，使其能走和数据帧相同的二维码载荷路径。
 func marshalManifest(meta manifest) ([]byte, error) {
 	name := []byte(meta.FileName)
 	if len(name) > maxFrameBodyLen {
 		return nil, errors.New("file name is too long for manifest")
 	}
 
-	// The capacity hint avoids reallocations for the fixed fields plus the file
-	// name. It is not part of the protocol; the field order below is.
+	// 容量提示避免固定字段加文件名产生重复分配。它不是协议的一部分；下面的字段顺序才是。
 	out := make([]byte, 0, 70+len(name))
 	out = append(out, []byte(manifestMagic)...)
 	out = append(out, manifestPasswordCheck...)
@@ -399,8 +362,7 @@ func marshalManifest(meta manifest) ([]byte, error) {
 	return out, nil
 }
 
-// parseManifest validates the manifest marker and then reads each fixed-width
-// field in the same order written by marshalManifest.
+// parseManifest 校验 manifest 标记，然后按 marshalManifest 写入时的相同顺序读取每个固定宽度字段。
 func parseManifest(payload []byte) (manifest, error) {
 	minLen := 4 + len(manifestPasswordCheck) + 8 + 4 + 4 + sha256.Size + 2
 	if len(payload) < minLen {
@@ -433,9 +395,7 @@ func parseManifest(payload []byte) (manifest, error) {
 	return meta, nil
 }
 
-// encryptFrameBody returns nonce || ciphertext || tag. The nonce is generated
-// per frame and stored beside the ciphertext because GCM needs the same nonce
-// for decryption but does not require it to be secret.
+// encryptFrameBody 返回 nonce || ciphertext || tag。nonce 按帧生成，并存储在密文旁边，因为 GCM 解密需要相同 nonce，但不要求它保密。
 func (ctx protocolContext) encryptFrameBody(gcm cipher.AEAD, frame transferFrame, plaintext []byte, salt []byte) ([]byte, error) {
 	nonce, err := ctx.randomBytes(nonceSize)
 	if err != nil {
@@ -449,8 +409,7 @@ func (ctx protocolContext) encryptFrameBody(gcm cipher.AEAD, frame transferFrame
 	return out, nil
 }
 
-// decryptFrameBody verifies the GCM tag before returning plaintext. Any change
-// to the body or authenticated frame metadata is reported as an error.
+// decryptFrameBody 在返回明文前校验 GCM tag。body 或已认证帧元数据的任何变化都会被报告为错误。
 func decryptFrameBody(gcm cipher.AEAD, frame transferFrame, body []byte, salt []byte) ([]byte, error) {
 	if len(body) < nonceSize+gcm.Overhead() {
 		return nil, errors.New("encrypted frame body is too short")
@@ -460,8 +419,7 @@ func decryptFrameBody(gcm cipher.AEAD, frame transferFrame, body []byte, salt []
 	return gcm.Open(nil, nonce, ciphertext, frameAAD(frame, salt))
 }
 
-// frameAAD is authenticated but not encrypted. It binds ciphertext to protocol
-// identity, frame kind, sequence number, total count, and the per-video salt.
+// frameAAD 会被认证但不会被加密。它把密文绑定到协议身份、帧类型、序列号、总数和每个视频的 salt。
 func frameAAD(frame transferFrame, salt []byte) []byte {
 	out := make([]byte, 0, 4+1+1+1+4+4+len(salt))
 	out = append(out, []byte(frameMagic)...)
@@ -472,8 +430,7 @@ func frameAAD(frame transferFrame, salt []byte) []byte {
 	return out
 }
 
-// makeGCM derives an AES-256 key from the password and salt, then wraps it in
-// GCM so encryption and authentication happen together.
+// makeGCM 从密码和 salt 派生 AES-256 密钥，然后包装为 GCM，让加密和认证一起发生。
 func makeGCM(password string, salt []byte) (cipher.AEAD, error) {
 	key, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, aesKeySize)
 	if err != nil {
@@ -486,7 +443,7 @@ func makeGCM(password string, salt []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// cryptoRandomBytes reads from crypto/rand so salts and nonces are unpredictable.
+// cryptoRandomBytes 从 crypto/rand 读取数据，让 salt 和 nonce 不可预测。
 func cryptoRandomBytes(n int) ([]byte, error) {
 	out := make([]byte, n)
 	if _, err := rand.Read(out); err != nil {
@@ -495,8 +452,7 @@ func cryptoRandomBytes(n int) ([]byte, error) {
 	return out, nil
 }
 
-// sameFrame treats identical duplicate QR captures as harmless while still
-// allowing collectFramesFromImages to reject conflicting duplicates.
+// sameFrame 把完全相同的重复二维码捕获视为无害，同时仍允许 collectFramesFromImages 拒绝冲突的重复帧。
 func sameFrame(a, b transferFrame) bool {
 	return a.Flags == b.Flags &&
 		a.Kind == b.Kind &&
@@ -505,8 +461,7 @@ func sameFrame(a, b transferFrame) bool {
 		bytes.Equal(a.Body, b.Body)
 }
 
-// formatMissingFrames keeps error messages readable by listing the first few
-// missing sequence numbers and eliding the rest.
+// formatMissingFrames 通过列出前几个缺失序列号并省略其余部分，让错误消息保持可读。
 func formatMissingFrames(frames map[uint32]transferFrame, total uint32) string {
 	missing := make([]string, 0)
 	for seq := uint32(0); seq < total; seq++ {

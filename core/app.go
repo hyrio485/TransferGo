@@ -10,48 +10,37 @@ import (
 )
 
 const (
-	// Defaults bias toward filmed-screen decoding: each QR is monochrome, uses a
-	// higher version for capacity, and leaves enough pixels per module for phone
-	// recordings to survive focus, scaling, and compression.
+	// 默认值偏向屏幕拍摄后的解码：每个二维码都是单色，使用较高版本换取容量，并为每个模块留下足够像素，让手机录像能经受对焦、缩放和压缩。
 	//
-	// defaultFPS keeps encoded videos slow enough for camera capture.
+	// defaultFPS 让编码后的视频足够慢，便于相机捕获。
 	defaultFPS = 3.0
-	// defaultSampleFPS oversamples decode videos so dropped or blurred frames
-	// can be recovered from neighboring samples.
+	// defaultSampleFPS 对解码视频进行过采样，让丢失或模糊的帧可以从相邻采样中恢复。
 	defaultSampleFPS = 9.0
-	// defaultQRSize leaves enough pixels per module for version 12 QR codes.
+	// defaultQRSize 为版本 12 的二维码给每个模块留下足够像素。
 	defaultQRSize = 240
-	// defaultQRVersion balances payload capacity against scan reliability.
+	// defaultQRVersion 在载荷容量和扫码可靠性之间取得平衡。
 	defaultQRVersion = 12
-	// defaultVideoWidth and defaultVideoHeight produce a square canvas that is
-	// easy to center on a screen or in a camera viewfinder.
+	// defaultVideoWidth 和 defaultVideoHeight 生成正方形画布，方便在屏幕或相机取景框中居中。
 	defaultVideoWidth  = 800
 	defaultVideoHeight = 800
-	// defaultGridSize packs multiple QR codes per frame without making each
-	// tile too small for filmed-screen decoding.
+	// defaultGridSize 在每帧中打包多个二维码，同时避免每个格子小到不利于屏幕拍摄解码。
 	defaultGridSize = 3
-	// defaultCRF is visually lossless enough for QR edges while keeping output
-	// videos smaller than fully lossless x264.
+	// defaultCRF 对二维码边缘来说视觉上足够无损，同时让输出视频小于完全无损的 x264。
 	defaultCRF = 24
-	// defaultChunkSize is the upper bound for automatically selected plaintext
-	// chunks; smaller values may be chosen for constrained QR versions.
+	// defaultChunkSize 是自动选择明文分块大小的上限；受限的二维码版本可能选择更小的值。
 	defaultChunkSize = 240
-	// maxQRBytePayload is the practical binary payload ceiling used while
-	// searching for a chunk size that fits the requested QR version.
+	// maxQRBytePayload 是搜索适配目标二维码版本的分块大小时使用的实际二进制载荷上限。
 	maxQRBytePayload = 2953
 )
 
-// appContext wires the stateful source-level contexts together. Stateless QR
-// helpers stay as package functions in qr.go.
+// appContext 把有状态的源级上下文连接在一起。无状态的二维码辅助函数保留为 qr.go 中的包函数。
 type appContext struct {
 	commands commandContext
 	protocol protocolContext
 	video    videoContext
 }
 
-// collectStats records how noisy the extracted image set was. Decode reports
-// these numbers so users can tell the difference between missing payload frames
-// and images that simply were not readable QR codes.
+// collectStats 记录抽取出的图片集合有多嘈杂。decode 会报告这些数字，方便区分缺失载荷帧和图片本身无法读取二维码两种情况。
 type collectStats struct {
 	images         int
 	decoded        int
@@ -60,15 +49,13 @@ type collectStats struct {
 	decodeFailures int
 }
 
-// imageDecodeResult carries one worker result back to the merge loop. Workers
-// never mutate the final frame map, which keeps duplicate detection serialized.
+// imageDecodeResult 把一个 worker 的结果带回合并循环。worker 从不修改最终帧映射，从而让重复检测保持串行。
 type imageDecodeResult struct {
 	payloads [][]byte
 	err      error
 }
 
-// newAppContext builds the production wiring for the CLI, using real OS
-// streams, randomness, QR handling, and ffmpeg execution hooks.
+// newAppContext 为 CLI 构建生产环境连接，使用真实的操作系统流、随机源、二维码处理和 ffmpeg 执行钩子。
 func newAppContext() appContext {
 	return appContext{
 		commands: newCommandContext(os.Stdout, os.Stderr),
@@ -77,14 +64,12 @@ func newAppContext() appContext {
 	}
 }
 
-// Run is the top-level CLI dispatcher. It accepts argv without the program
-// name, which keeps it easy to test and leaves process concerns in main.
+// Run 是顶层 CLI 分发器。它接收不含程序名的 argv，便于测试，并把进程相关职责留在 main 中。
 func Run(args []string) error {
 	return newAppContext().Run(args)
 }
 
-// Run dispatches one parsed subcommand to the encode or decode pipeline. It is
-// a method so tests can inject fake command, protocol, QR, or video contexts.
+// Run 把解析出的子命令分发到 encode 或 decode 流水线。它是方法，因此测试可以注入假的命令、协议、二维码或视频上下文。
 func (app appContext) Run(args []string) error {
 	if len(args) == 0 {
 		app.commands.printUsage(app.commands.stderr)
@@ -105,8 +90,7 @@ func (app appContext) Run(args []string) error {
 	}
 }
 
-// runEncode reads one input file, turns it into protocol frames, renders each
-// frame as a QR PNG, and asks ffmpeg to assemble those PNGs into a video.
+// runEncode 读取一个输入文件，将其转为协议帧，把每帧渲染成二维码 PNG，并让 ffmpeg 将这些 PNG 组装成视频。
 func (app appContext) runEncode(args []string) error {
 	opt, err := app.commands.parseEncodeOptions(args, defaultEncodeOptions())
 	if err != nil {
@@ -161,7 +145,7 @@ func (app appContext) runEncode(args []string) error {
 		return fmt.Errorf("write QR frames: %w", err)
 	}
 	Fprintln(app.commands.stdout, "encoding video with ffmpeg...")
-	if err := app.video.encodeVideoWithFFmpeg(opt.ffmpeg, framesDir, opt.output, opt.fps, opt.crf); err != nil {
+	if err := app.video.encodeVideoWithFfmpeg(opt.ffmpeg, framesDir, opt.output, opt.fps, opt.crf); err != nil {
 		return fmt.Errorf("encode video with ffmpeg: %w", err)
 	}
 
@@ -174,8 +158,7 @@ func (app appContext) runEncode(args []string) error {
 	return nil
 }
 
-// runDecode extracts PNG frames from a video, decodes any TransferGo QR
-// payloads it can find, then verifies and reassembles the original file.
+// runDecode 从视频中抽取 PNG 帧，解码能找到的 TransferGo 二维码载荷，然后校验并重新组装原始文件。
 func (app appContext) runDecode(args []string) error {
 	opt, err := app.commands.parseDecodeOptions(args, defaultDecodeOptions())
 	if err != nil {
@@ -189,7 +172,7 @@ func (app appContext) runDecode(args []string) error {
 	defer cleanup()
 
 	Fprintln(app.commands.stdout, "extracting video frames with ffmpeg...")
-	if err := app.video.extractFramesWithFFmpeg(opt.ffmpeg, opt.input, framesDir, opt.sampleFPS); err != nil {
+	if err := app.video.extractFramesWithFfmpeg(opt.ffmpeg, opt.input, framesDir, opt.sampleFPS); err != nil {
 		return fmt.Errorf("extract video frames with ffmpeg: %w", err)
 	}
 
@@ -236,8 +219,7 @@ func (app appContext) runDecode(args []string) error {
 	return nil
 }
 
-// defaultEncodeOptions returns the camera-friendly encode defaults used before
-// command-line flags override individual fields.
+// defaultEncodeOptions 返回命令行参数覆盖各字段前使用的、适合相机拍摄的 encode 默认值。
 func defaultEncodeOptions() encodeOptions {
 	return encodeOptions{
 		fps:         defaultFPS,
@@ -250,8 +232,7 @@ func defaultEncodeOptions() encodeOptions {
 	}
 }
 
-// defaultDecodeOptions returns decode defaults that favor robust recovery from
-// a recorded screen over raw processing speed.
+// defaultDecodeOptions 返回 decode 默认值，相比原始处理速度更偏向从屏幕录像中稳健恢复。
 func defaultDecodeOptions() decodeOptions {
 	return decodeOptions{
 		sampleFPS: defaultSampleFPS,
@@ -259,9 +240,7 @@ func defaultDecodeOptions() decodeOptions {
 	}
 }
 
-// writeTransferFrames marshals protocol frames before handing them to QR
-// rendering. Keeping the conversion here lets qr.go stay unaware of TransferGo
-// frame headers and encryption details.
+// writeTransferFrames 在交给二维码渲染前序列化协议帧。把转换保留在这里，可以让 qr.go 不感知 TransferGo 帧头和加密细节。
 func (app appContext) writeTransferFrames(frames []transferFrame, dir string, opt qrRenderOptions, progress func(done int, total int)) error {
 	payloads := make([][]byte, 0, len(frames))
 	for _, frame := range frames {
@@ -270,10 +249,7 @@ func (app appContext) writeTransferFrames(frames []transferFrame, dir string, op
 	return writeQRPayloadFrames(payloads, dir, opt, progress)
 }
 
-// collectFramesFromImages decodes every extracted PNG and keeps only valid
-// TransferGo frames. Image decoding is parallelized because each extracted frame
-// is independent, while protocol merging stays on the caller goroutine so
-// sequence de-duplication and conflict checks remain simple.
+// collectFramesFromImages 解码每张抽取出的 PNG，并只保留有效的 TransferGo 帧。图片解码会并行执行，因为每张抽取帧彼此独立；协议合并留在调用方 goroutine 中，让序列去重和冲突检查保持简单。
 func (app appContext) collectFramesFromImages(paths []string, gridSize int, progress func(done int, total int)) (map[uint32]transferFrame, uint32, collectStats, error) {
 	frames := make(map[uint32]transferFrame)
 	var total uint32
@@ -339,9 +315,7 @@ func (app appContext) collectFramesFromImages(paths []string, gridSize int, prog
 	return frames, total, stats, nil
 }
 
-// autoChunkSize chooses a camera-friendly plaintext chunk size that still fits
-// the requested QR version. This belongs in app because it uses protocol bytes
-// and QR capacity together.
+// autoChunkSize 选择仍能放入目标二维码版本、且适合相机拍摄的明文分块大小。它属于 app，因为这里同时使用协议字节和二维码容量。
 func (app appContext) autoChunkSize(encrypted bool, qrSize int, qrVersion int) (int, error) {
 	low, high := 1, maxQRBytePayload
 	best := 0
@@ -363,8 +337,7 @@ func (app appContext) autoChunkSize(encrypted bool, qrSize int, qrVersion int) (
 	return best, nil
 }
 
-// canEncodeChunkSize builds a representative data frame and asks the QR encoder
-// whether it fits. Encrypted frames reserve space for the GCM nonce and tag.
+// canEncodeChunkSize 构造一个有代表性的数据帧，并询问二维码编码器它是否能放下。加密帧会为 GCM nonce 和 tag 预留空间。
 func (app appContext) canEncodeChunkSize(chunkSize int, encrypted bool, qrSize int, qrVersion int) bool {
 	bodyLen := chunkSize
 	if encrypted {
