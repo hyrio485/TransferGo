@@ -29,6 +29,11 @@ type collectStats struct {
 
 type qrColorChannel int
 
+type pointF struct {
+	x float64
+	y float64
+}
+
 const (
 	qrChannelRed qrColorChannel = iota
 	qrChannelGreen
@@ -36,11 +41,15 @@ const (
 )
 
 const (
-	colorChannelCount  = 3
-	qrQuietZoneModules = 4
-	qrCanvasWhite      = 255
-	qrSoftWhite        = 224
-	qrSoftBlack        = 48
+	qrChannelsToDecode       = 3
+	qrQuietZoneModules       = 4
+	qrCanvasWhite            = 255
+	qrSoftWhite              = 224
+	qrSoftBlack              = 48
+	qrGuideBlack             = 16
+	qrGuideWidth             = 6
+	qrSaturatedColorDistance = 35
+	qrWarpPadding            = 1.14
 )
 
 type qrRenderOptions struct {
@@ -78,7 +87,7 @@ func (opt qrRenderOptions) validate() error {
 }
 
 func (opt qrRenderOptions) slotsPerImage() int {
-	return opt.gridSize * opt.gridSize * colorChannelCount
+	return opt.gridSize * opt.gridSize * qrChannelsToDecode
 }
 
 func (opt qrRenderOptions) minTileSize() int {
@@ -120,11 +129,12 @@ func writeQRFrames(frames []transferFrame, dir string, opt qrRenderOptions) erro
 
 	for start, imageIndex := 0, 1; start < len(frames); start, imageIndex = start+slots, imageIndex+1 {
 		img := newMosaicCanvas(opt.videoWidth, opt.videoHeight)
+		drawMosaicGuides(img, opt)
 		end := minInt(start+slots, len(frames))
 		for frameIndex := start; frameIndex < end; frameIndex++ {
 			slot := frameIndex - start
-			tile := slot / colorChannelCount
-			channel := qrColorChannel(slot % colorChannelCount)
+			tile := slot / qrChannelsToDecode
+			channel := qrColorChannel(slot % qrChannelsToDecode)
 			qrImg, err := encodeQRGray(marshalFrame(frames[frameIndex]), qrSize, opt.qrVersion)
 			if err != nil {
 				return fmt.Errorf("encode QR frame %d: %w", frames[frameIndex].Seq, err)
@@ -206,6 +216,27 @@ func newMosaicCanvas(width int, height int) *image.RGBA {
 	return img
 }
 
+func drawMosaicGuides(dst *image.RGBA, opt qrRenderOptions) {
+	for tile := 0; tile < opt.gridSize*opt.gridSize; tile++ {
+		drawTileGuide(dst, opt.tileRect(tile))
+	}
+}
+
+func drawTileGuide(dst *image.RGBA, rect image.Rectangle) {
+	guide := qrGuideWidth
+	if rect.Dx() < guide*6 || rect.Dy() < guide*6 {
+		return
+	}
+	black := color.RGBA{R: qrGuideBlack, G: qrGuideBlack, B: qrGuideBlack, A: 255}
+	for y := rect.Min.Y; y < rect.Max.Y; y++ {
+		for x := rect.Min.X; x < rect.Max.X; x++ {
+			if x < rect.Min.X+guide || x >= rect.Max.X-guide || y < rect.Min.Y+guide || y >= rect.Max.Y-guide {
+				dst.SetRGBA(x, y, black)
+			}
+		}
+	}
+}
+
 func drawQRIntoChannel(dst *image.RGBA, qr *image.Gray, tile image.Rectangle, channel qrColorChannel) error {
 	qrBounds := qr.Bounds()
 	qrWidth := qrBounds.Dx()
@@ -224,7 +255,7 @@ func drawQRIntoChannel(dst *image.RGBA, qr *image.Gray, tile image.Rectangle, ch
 				continue
 			}
 			pixelOffset := dstOffset + x*4
-			for c := 0; c < colorChannelCount; c++ {
+			for c := 0; c < qrChannelsToDecode; c++ {
 				if dst.Pix[pixelOffset+c] > qrSoftWhite {
 					dst.Pix[pixelOffset+c] = qrSoftWhite
 				}
@@ -233,19 +264,6 @@ func drawQRIntoChannel(dst *image.RGBA, qr *image.Gray, tile image.Rectangle, ch
 		}
 	}
 	return nil
-}
-
-// decodeQRCodeBytes keeps the single-QR path available for older tests and
-// legacy videos. New mosaic frames are decoded through decodeQRCodePayloads.
-func decodeQRCodeBytes(path string) ([]byte, error) {
-	payloads, err := decodeQRCodePayloads(path, defaultGridSize)
-	if err != nil {
-		return nil, err
-	}
-	if len(payloads) == 0 {
-		return nil, fmt.Errorf("no QR code decoded")
-	}
-	return payloads[0], nil
 }
 
 func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
@@ -281,6 +299,16 @@ func decodeQRCodePayloadsFromImage(img image.Image, gridSize int) [][]byte {
 	for _, rect := range decodeCandidateRects(img) {
 		for _, channel := range []qrColorChannel{qrChannelRed, qrChannelGreen, qrChannelBlue} {
 			channelImg := imageChannelToGray(img, channel, rect)
+			addMultipleDecode(acc, channelImg)
+			addSingleDecode(acc, channelImg)
+			for _, cell := range gridCellRects(channelImg.Bounds(), gridSize) {
+				addSingleDecode(acc, cropGray(channelImg, cell))
+			}
+		}
+	}
+	if warped, ok := saturatedContentWarp(img); ok {
+		for _, channel := range []qrColorChannel{qrChannelRed, qrChannelGreen, qrChannelBlue} {
+			channelImg := imageChannelToGray(warped, channel, warped.Bounds())
 			addMultipleDecode(acc, channelImg)
 			addSingleDecode(acc, channelImg)
 			for _, cell := range gridCellRects(channelImg.Bounds(), gridSize) {
@@ -461,7 +489,7 @@ func saturatedContentSquare(img image.Image) (image.Rectangle, bool) {
 		for x := bounds.Min.X; x < bounds.Max.X; x += step {
 			r, g, b, _ := img.At(x, y).RGBA()
 			rr, gg, bb := int(r>>8), int(g>>8), int(b>>8)
-			if maxInt3(rr, gg, bb)-minInt3(rr, gg, bb) < 35 {
+			if maxInt3(rr, gg, bb)-minInt3(rr, gg, bb) < qrSaturatedColorDistance {
 				continue
 			}
 			minX = minInt(minX, x)
@@ -478,6 +506,105 @@ func saturatedContentSquare(img image.Image) (image.Rectangle, bool) {
 	rect := image.Rect(minX, minY, maxX+step, maxY+step).Intersect(bounds)
 	padding := maxInt(step*2, minInt(bounds.Dx(), bounds.Dy())/50)
 	return squareAroundRect(expandRect(rect, padding, bounds), bounds), true
+}
+
+func saturatedContentWarp(img image.Image) (image.Image, bool) {
+	bounds := img.Bounds()
+	step := maxInt(1, minInt(bounds.Dx(), bounds.Dy())/700)
+	var tl, tr, br, bl pointF
+	minSum := 1 << 30
+	maxSum := -1 << 30
+	minDiff := 1 << 30
+	maxDiff := -1 << 30
+	count := 0
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += step {
+		for x := bounds.Min.X; x < bounds.Max.X; x += step {
+			r, g, b, _ := img.At(x, y).RGBA()
+			rr, gg, bb := int(r>>8), int(g>>8), int(b>>8)
+			if maxInt3(rr, gg, bb)-minInt3(rr, gg, bb) < qrSaturatedColorDistance {
+				continue
+			}
+			sum := x + y
+			diff := x - y
+			p := pointF{x: float64(x), y: float64(y)}
+			if sum < minSum {
+				minSum = sum
+				tl = p
+			}
+			if sum > maxSum {
+				maxSum = sum
+				br = p
+			}
+			if diff > maxDiff {
+				maxDiff = diff
+				tr = p
+			}
+			if diff < minDiff {
+				minDiff = diff
+				bl = p
+			}
+			count++
+		}
+	}
+	if count < 24 {
+		return nil, false
+	}
+
+	quad := expandQuad([4]pointF{tl, tr, br, bl}, qrWarpPadding)
+	side := minInt(bounds.Dx(), bounds.Dy())
+	if side <= 0 {
+		return nil, false
+	}
+	return warpQuadToSquare(img, quad, side), true
+}
+
+func expandQuad(quad [4]pointF, scale float64) [4]pointF {
+	var center pointF
+	for _, p := range quad {
+		center.x += p.x
+		center.y += p.y
+	}
+	center.x /= float64(len(quad))
+	center.y /= float64(len(quad))
+	for i, p := range quad {
+		quad[i] = pointF{
+			x: center.x + (p.x-center.x)*scale,
+			y: center.y + (p.y-center.y)*scale,
+		}
+	}
+	return quad
+}
+
+func warpQuadToSquare(src image.Image, quad [4]pointF, side int) *image.RGBA {
+	dst := image.NewRGBA(image.Rect(0, 0, side, side))
+	for y := 0; y < side; y++ {
+		v := float64(y) / float64(side-1)
+		for x := 0; x < side; x++ {
+			u := float64(x) / float64(side-1)
+			p := bilinearPoint(quad, u, v)
+			dst.Set(x, y, sampleImageNearest(src, p.x, p.y))
+		}
+	}
+	return dst
+}
+
+func bilinearPoint(quad [4]pointF, u float64, v float64) pointF {
+	tl, tr, br, bl := quad[0], quad[1], quad[2], quad[3]
+	return pointF{
+		x: (1-u)*(1-v)*tl.x + u*(1-v)*tr.x + u*v*br.x + (1-u)*v*bl.x,
+		y: (1-u)*(1-v)*tl.y + u*(1-v)*tr.y + u*v*br.y + (1-u)*v*bl.y,
+	}
+}
+
+func sampleImageNearest(img image.Image, x float64, y float64) color.Color {
+	bounds := img.Bounds()
+	ix := int(x + 0.5)
+	iy := int(y + 0.5)
+	if ix < bounds.Min.X || ix >= bounds.Max.X || iy < bounds.Min.Y || iy >= bounds.Max.Y {
+		return color.RGBA{R: qrCanvasWhite, G: qrCanvasWhite, B: qrCanvasWhite, A: 255}
+	}
+	return img.At(ix, iy)
 }
 
 func expandRect(rect image.Rectangle, padding int, bounds image.Rectangle) image.Rectangle {

@@ -125,9 +125,9 @@ cmp files/input.bin files/restored.bin
 | `-width` / `-video-width` | `800` | 输出视频宽度 |
 | `-height` / `-video-height` | `800` | 输出视频高度 |
 | `-grid-size` | `3` | 每帧二维码网格行列数，默认 `3x3` |
-| `-chunk-size` | `0` | 每个数据二维码承载的明文字节数；0 表示自动探测最大值 |
+| `-chunk-size` | `0` | 每个数据二维码承载的明文字节数；0 表示使用更适合手机录像的默认值 |
 | `-crf` | `0` | x264 CRF；0 表示无损 |
-| `-frames-dir` | 临时目录 | 指定二维码帧输出目录 |
+| `-frames-dir` | 当前目录下的时间戳目录 | 指定二维码帧输出目录 |
 | `-keep-frames` | `false` | 保留生成的二维码 PNG 帧 |
 
 ### decode
@@ -144,7 +144,7 @@ cmp files/input.bin files/restored.bin
 | `-ffmpeg` | `FFMPEG_PATH` 或 `ffmpeg` | ffmpeg 可执行文件路径 |
 | `-sample-fps` | `9` | 解码时从视频抽帧的采样帧率 |
 | `-grid-size` | `3` | 解码时尝试的二维码网格行列数 |
-| `-frames-dir` | 临时目录 | 指定抽帧输出目录 |
+| `-frames-dir` | 当前目录下的时间戳目录 | 指定抽帧输出目录 |
 | `-keep-frames` | `false` | 保留抽取出的 PNG 帧 |
 | `-force` | `false` | 允许覆盖已有输出文件 |
 
@@ -209,7 +209,8 @@ missing frame(s): 3, 4
 - 避免播放器控件遮挡二维码。
 - 手机拍摄时保持画面稳定、对焦清晰。
 - 默认 `3 fps` 会让每帧保持足够长的显示时间；如果调高 `-fps`，录制端也需要稳定捕获每一帧。
-- 如果视频经过二次压缩或平台转码，建议保持较低的 `-qr-version`，必要时降低 `-chunk-size`。
+- 如果视频经过二次压缩或平台转码，建议保持较低的 `-qr-version`，必要时继续降低 `-chunk-size`。
+- 如果只是在本机生成并直接解码视频，可以手动提高 `-chunk-size`；如果要手机拍屏录像，建议先使用默认值。
 
 ## 项目结构
 

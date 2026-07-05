@@ -58,7 +58,8 @@ const (
 	defaultVideoWidth  = 800
 	defaultVideoHeight = 800
 	defaultGridSize    = 3
-	defaultCRF         = 0
+	defaultCRF         = 24
+	defaultChunkSize   = 96
 	maxQRBytePayload   = 2953
 	maxFrameBodyLen    = 1<<16 - 1
 
@@ -488,8 +489,9 @@ func randomBytes(n int) ([]byte, error) {
 	return out, nil
 }
 
-// autoChunkSize binary-searches for the largest plaintext chunk that the real
-// QR encoder can fit for the requested version and image size.
+// autoChunkSize chooses a camera-friendly plaintext chunk size that still fits
+// the requested QR version. Manually supplied -chunk-size can still opt into
+// denser QR codes when the video will not be filmed from a screen.
 func autoChunkSize(encrypted bool, qrSize int, qrVersion int) (int, error) {
 	low, high := 1, maxQRBytePayload
 	best := 0
@@ -504,6 +506,9 @@ func autoChunkSize(encrypted bool, qrSize int, qrVersion int) (int, error) {
 	}
 	if best == 0 {
 		return 0, fmt.Errorf("no data chunk size fits QR version %d", qrVersion)
+	}
+	if best > defaultChunkSize {
+		return defaultChunkSize, nil
 	}
 	return best, nil
 }

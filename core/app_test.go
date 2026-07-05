@@ -131,6 +131,16 @@ func TestEncryptedRoundTripAndWrongPassword(t *testing.T) {
 	}
 }
 
+func TestAutoChunkSizeUsesCameraFriendlyDefault(t *testing.T) {
+	chunkSize, err := autoChunkSize(false, defaultQRSize, defaultQRVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunkSize != defaultChunkSize {
+		t.Fatalf("chunk size = %d, want %d", chunkSize, defaultChunkSize)
+	}
+}
+
 func TestMissingFrameFails(t *testing.T) {
 	frames, _, err := buildTransferFrames([]byte("0123456789abcdef"), "split.txt", "", 4)
 	if err != nil {
@@ -154,6 +164,38 @@ func TestPrepareFramesDirRejectsStaleFrames(t *testing.T) {
 	_, _, err := prepareFramesDir(dir, "unused-*", false)
 	if err == nil || !strings.Contains(err.Error(), "already contains frame_*.png") {
 		t.Fatalf("prepareFramesDir error = %v, want stale frame rejection", err)
+	}
+}
+
+func TestPrepareFramesDirDefaultsToCurrentDirectory(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	framesDir, cleanup, err := prepareFramesDir("", "transfergo-encode-*", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	if filepath.Dir(framesDir) != "." {
+		t.Fatalf("frames dir parent = %q, want current directory", filepath.Dir(framesDir))
+	}
+	if !strings.HasPrefix(filepath.Base(framesDir), "transfergo-encode-") {
+		t.Fatalf("frames dir = %q, want transfergo-encode-*", framesDir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, framesDir)); err != nil {
+		t.Fatalf("frames dir was not created under current directory: %v", err)
 	}
 }
 

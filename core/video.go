@@ -9,11 +9,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // prepareFramesDir returns a directory for intermediate PNG frames plus a
 // cleanup callback. User-provided directories must not already contain frame
 // files, otherwise stale frames could be mixed into a new encode/decode run.
+// Default directories are created under the current working directory and end
+// with a timestamp.
 func prepareFramesDir(dir string, pattern string, keep bool) (string, func(), error) {
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -29,8 +32,8 @@ func prepareFramesDir(dir string, pattern string, keep bool) (string, func(), er
 		return dir, func() {}, nil
 	}
 
-	tmp, err := os.MkdirTemp("", pattern)
-	if err != nil {
+	tmp := strings.Replace(pattern, "*", time.Now().Format("20060102150405_000000000"), 1)
+	if err := os.Mkdir(tmp, 0755); err != nil {
 		return "", nil, err
 	}
 	cleanup := func() {

@@ -68,7 +68,7 @@ func runEncode(args []string) error {
 	fs.IntVar(&opt.videoHeight, "height", defaultVideoHeight, "output video height in pixels")
 	fs.IntVar(&opt.videoHeight, "video-height", defaultVideoHeight, "output video height in pixels (alias for -height)")
 	fs.IntVar(&opt.gridSize, "grid-size", defaultGridSize, "QR grid rows and columns per video frame")
-	fs.IntVar(&opt.chunkSize, "chunk-size", 0, "plaintext bytes per data QR; 0 auto-detects the maximum")
+	fs.IntVar(&opt.chunkSize, "chunk-size", 0, "plaintext bytes per data QR; 0 selects a camera-friendly default")
 	fs.IntVar(&opt.crf, "crf", defaultCRF, "x264 CRF; 0 is lossless")
 	fs.BoolVar(&opt.keep, "keep-frames", false, "keep generated PNG frames")
 
@@ -114,9 +114,9 @@ func runEncode(args []string) error {
 		return err
 	}
 
-	// A zero chunk size means "fit as much plaintext as the selected QR version
-	// can actually encode". The check uses the real QR encoder because capacity
-	// depends on version, error correction, and encryption overhead.
+	// A zero chunk size means "choose a camera-friendly amount of plaintext that
+	// fits the selected QR version". The check uses the real QR encoder because
+	// capacity depends on version, error correction, and encryption overhead.
 	chunkSize := opt.chunkSize
 	if chunkSize == 0 {
 		chunkSize, err = autoChunkSize(opt.password != "", renderOpt.effectiveQRSize(), opt.qrVersion)

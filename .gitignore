@@ -7,3 +7,5 @@
 /transfergo
 /files/
 /test-cmds.txt
+/.gocache/
+/.gomodcache/
