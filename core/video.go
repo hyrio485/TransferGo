@@ -75,9 +75,9 @@ func (ctx videoContext) sortedFramePaths(dir string) ([]string, error) {
 
 // encodeVideoWithFfmpeg 把 PNG 序列转成 H.264 MP4。输出使用 yuv420p，因为它能在常见播放器和手机上正确预览。
 func (ctx videoContext) encodeVideoWithFfmpeg(ffmpegPath string, framesDir string, output string, fps float64, crf int) error {
-	ffmpegPath = ctx.resolveFfmpegPath(ffmpegPath)
-	if _, err := ctx.lookPath(ffmpegPath); err != nil && !strings.Contains(ffmpegPath, string(os.PathSeparator)) {
-		return fmt.Errorf("ffmpeg not found; pass -ffmpeg <path>, set FFMPEG_PATH, or make ffmpeg available in PATH")
+	ffmpegPath, err := ctx.resolveFfmpegPath(ffmpegPath)
+	if err != nil {
+		return fmt.Errorf("resolve ffmpeg path for encode: %w", err)
 	}
 
 	args := []string{
@@ -100,9 +100,9 @@ func (ctx videoContext) encodeVideoWithFfmpeg(ffmpegPath string, framesDir strin
 
 // extractFramesWithFfmpeg 把输入视频采样为 PNG。高于源帧率的采样可能产生重复帧，二维码收集步骤会有意容忍这种情况。
 func (ctx videoContext) extractFramesWithFfmpeg(ffmpegPath string, input string, framesDir string, sampleFPS float64) error {
-	ffmpegPath = ctx.resolveFfmpegPath(ffmpegPath)
-	if _, err := ctx.lookPath(ffmpegPath); err != nil && !strings.Contains(ffmpegPath, string(os.PathSeparator)) {
-		return fmt.Errorf("ffmpeg not found; pass -ffmpeg <path>, set FFMPEG_PATH, or make ffmpeg available in PATH")
+	ffmpegPath, err := ctx.resolveFfmpegPath(ffmpegPath)
+	if err != nil {
+		return fmt.Errorf("resolve ffmpeg path for extract: %w", err)
 	}
 
 	args := []string{
@@ -120,14 +120,17 @@ func (ctx videoContext) extractFramesWithFfmpeg(ffmpegPath string, input string,
 }
 
 // resolveFfmpegPath 应用文档中的查找顺序：显式 -ffmpeg、FFMPEG_PATH，然后是通过 PATH 解析的普通 "ffmpeg" 命令。
-func (ctx videoContext) resolveFfmpegPath(explicit string) string {
+func (ctx videoContext) resolveFfmpegPath(explicit string) (string, error) {
+	ffmpegPath := "ffmpeg"
 	if explicit != "" {
-		return explicit
+		ffmpegPath = explicit
+	} else if env := ctx.getenv("FFMPEG_PATH"); env != "" {
+		ffmpegPath = env
 	}
-	if env := ctx.getenv("FFMPEG_PATH"); env != "" {
-		return env
+	if _, err := ctx.lookPath(ffmpegPath); err != nil && !strings.Contains(ffmpegPath, string(os.PathSeparator)) {
+		return "", fmt.Errorf("ffmpeg not found; pass -ffmpeg <path>, set FFMPEG_PATH, or make ffmpeg available in PATH")
 	}
-	return "ffmpeg"
+	return ffmpegPath, nil
 }
 
 // runCommand 捕获 ffmpeg 输出并附加到返回的错误中。这样成功运行时保持安静，失败时仍保留有用诊断信息。

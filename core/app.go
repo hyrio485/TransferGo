@@ -94,7 +94,7 @@ func (app appContext) Run(args []string) error {
 func (app appContext) runEncode(args []string) error {
 	opt, err := app.commands.parseEncodeOptions(args, defaultEncodeOptions())
 	if err != nil {
-		return err
+		return fmt.Errorf("parse encode options: %w", err)
 	}
 
 	renderOpt := qrRenderOptions{
@@ -162,7 +162,7 @@ func (app appContext) runEncode(args []string) error {
 func (app appContext) runDecode(args []string) error {
 	opt, err := app.commands.parseDecodeOptions(args, defaultDecodeOptions())
 	if err != nil {
-		return err
+		return fmt.Errorf("parse decode options: %w", err)
 	}
 
 	framesDir, cleanup, err := app.video.prepareFramesDir(opt.framesDir, "transfergo-decode-*", opt.keep)

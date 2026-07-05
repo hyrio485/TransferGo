@@ -87,16 +87,31 @@ func TestVideoResolveFfmpegPath(t *testing.T) {
 		}
 		return ""
 	}
+	ctx.lookPath = func(name string) (string, error) {
+		return name, nil
+	}
 
-	if got := ctx.resolveFfmpegPath("/flag/ffmpeg"); got != "/flag/ffmpeg" {
+	got, err := ctx.resolveFfmpegPath("/flag/ffmpeg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/flag/ffmpeg" {
 		t.Fatalf("explicit ffmpeg path = %q, want /flag/ffmpeg", got)
 	}
-	if got := ctx.resolveFfmpegPath(""); got != "/env/ffmpeg" {
+	got, err = ctx.resolveFfmpegPath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/env/ffmpeg" {
 		t.Fatalf("env ffmpeg path = %q, want /env/ffmpeg", got)
 	}
 
 	ctx.getenv = func(string) string { return "" }
-	if got := ctx.resolveFfmpegPath(""); got != "ffmpeg" {
+	got, err = ctx.resolveFfmpegPath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ffmpeg" {
 		t.Fatalf("default ffmpeg path = %q, want ffmpeg", got)
 	}
 }
