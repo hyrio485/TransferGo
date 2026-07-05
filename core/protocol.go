@@ -49,17 +49,18 @@ const (
 	aesKeySize       = 32
 	pbkdf2Iterations = 200_000
 
-	// Defaults bias toward filmed-screen decoding: compact QR codes, multiple
-	// color channels per image, and a modest source frame rate.
+	// Defaults bias toward filmed-screen decoding: each QR is monochrome, uses a
+	// higher version for capacity, and leaves enough pixels per module for phone
+	// recordings to survive focus, scaling, and compression.
 	defaultFPS         = 3.0
 	defaultSampleFPS   = 9.0
 	defaultQRSize      = 240
-	defaultQRVersion   = 8
+	defaultQRVersion   = 12
 	defaultVideoWidth  = 800
 	defaultVideoHeight = 800
 	defaultGridSize    = 3
 	defaultCRF         = 24
-	defaultChunkSize   = 96
+	defaultChunkSize   = 240
 	maxQRBytePayload   = 2953
 	maxFrameBodyLen    = 1<<16 - 1
 
@@ -490,8 +491,9 @@ func randomBytes(n int) ([]byte, error) {
 }
 
 // autoChunkSize chooses a camera-friendly plaintext chunk size that still fits
-// the requested QR version. Manually supplied -chunk-size can still opt into
-// denser QR codes when the video will not be filmed from a screen.
+// the requested QR version. The cap is intentionally below the theoretical QR
+// capacity because filmed screens lose fine detail long before the encoder
+// itself runs out of space.
 func autoChunkSize(encrypted bool, qrSize int, qrVersion int) (int, error) {
 	low, high := 1, maxQRBytePayload
 	best := 0

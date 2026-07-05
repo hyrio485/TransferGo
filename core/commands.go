@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // encodeOptions mirrors the encode command flags after parsing. Keeping all
@@ -73,7 +74,7 @@ func runEncode(args []string) error {
 	fs.BoolVar(&opt.keep, "keep-frames", false, "keep generated PNG frames")
 
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse encode flags failed: %w", err)
 	}
 	// Validate before doing file or ffmpeg work so users get fast, local errors
 	// for invalid command lines.
@@ -109,6 +110,7 @@ func runEncode(args []string) error {
 		return errors.New("-crf must be between 0 and 51")
 	}
 
+	fmt.Printf("reading input file: %s\n", opt.input)
 	input, err := os.ReadFile(opt.input)
 	if err != nil {
 		return err
@@ -125,6 +127,7 @@ func runEncode(args []string) error {
 		}
 	}
 
+	fmt.Printf("building protocol frames...\n")
 	frames, meta, err := buildTransferFrames(input, filepath.Base(opt.input), opt.password, chunkSize)
 	if err != nil {
 		return err
@@ -146,9 +149,11 @@ func runEncode(args []string) error {
 	}
 	defer cleanup()
 
-	if err := writeQRFrames(frames, framesDir, renderOpt); err != nil {
+	fmt.Printf("rendering QR images...\n")
+	if err := writeQRFrames(frames, framesDir, renderOpt, newProgressPrinter("rendered QR images")); err != nil {
 		return err
 	}
+	fmt.Printf("encoding video with ffmpeg...\n")
 	if err := encodeVideoWithFFmpeg(opt.ffmpeg, framesDir, opt.output, opt.fps, opt.crf); err != nil {
 		return err
 	}
@@ -207,6 +212,7 @@ func runDecode(args []string) error {
 
 	// ffmpeg may extract duplicate frames or frames with motion blur. The later
 	// collection step treats those as noisy input and keeps only valid payloads.
+	fmt.Printf("extracting video frames with ffmpeg...\n")
 	if err := extractFramesWithFFmpeg(opt.ffmpeg, opt.input, framesDir, opt.sampleFPS); err != nil {
 		return err
 	}
@@ -215,13 +221,15 @@ func runDecode(args []string) error {
 	if err != nil {
 		return err
 	}
-	frames, total, stats, err := collectFramesFromImages(paths, opt.gridSize)
+	fmt.Printf("decoding QR images...\n")
+	frames, total, stats, err := collectFramesFromImages(paths, opt.gridSize, newProgressPrinter("decoded QR images"))
 	if err != nil {
 		return err
 	}
 	// restoreFromFrames performs the protocol-level checks: manifest parsing,
 	// optional password verification, missing frame detection, decryption, and
 	// final file hash validation.
+	fmt.Printf("restoring file bytes...\n")
 	meta, output, err := restoreFromFrames(frames, total, opt.password)
 	if err != nil {
 		return err
@@ -256,4 +264,21 @@ func runDecode(args []string) error {
 		fmt.Printf("frames kept in %s\n", framesDir)
 	}
 	return nil
+}
+
+// newProgressPrinter throttles progress output so long scans stay visible
+// without printing one line per frame on fast machines.
+func newProgressPrinter(label string) progressCallback {
+	var last time.Time
+	return func(done int, total int) {
+		if total <= 0 {
+			return
+		}
+		now := time.Now()
+		if done != total && !last.IsZero() && now.Sub(last) < 500*time.Millisecond {
+			return
+		}
+		last = now
+		fmt.Printf("%s: %d/%d\n", label, done, total)
+	}
 }

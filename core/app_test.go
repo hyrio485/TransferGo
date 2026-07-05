@@ -33,18 +33,18 @@ func TestPlainRoundTripThroughQRImages(t *testing.T) {
 		videoHeight: defaultVideoHeight,
 		gridSize:    defaultGridSize,
 	}
-	if err := writeQRFrames(frames, dir, renderOpt); err != nil {
+	if err := writeQRFrames(frames, dir, renderOpt, nil); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := sortedFramePaths(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != 2 {
-		t.Fatalf("rendered images = %d, want 2", len(paths))
+	if len(paths) != 5 {
+		t.Fatalf("rendered images = %d, want 5", len(paths))
 	}
 
-	collected, total, stats, err := collectFramesFromImages(paths, renderOpt.gridSize)
+	collected, total, stats, err := collectFramesFromImages(paths, renderOpt.gridSize, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestCollectFramesSkipsNoisyImages(t *testing.T) {
 	if err := writeBlankPNG(filepath.Join(dir, "frame_000000.png")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeQRFrames(frames, dir, renderOpt); err != nil {
+	if err := writeQRFrames(frames, dir, renderOpt, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -90,7 +90,7 @@ func TestCollectFramesSkipsNoisyImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	collected, total, stats, err := collectFramesFromImages(paths, renderOpt.gridSize)
+	collected, total, stats, err := collectFramesFromImages(paths, renderOpt.gridSize, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
