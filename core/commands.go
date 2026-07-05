@@ -4,10 +4,17 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
 	"time"
 )
+
+// commandContext owns CLI-facing streams and time. It parses flags without
+// depending on protocol, QR, or video implementation details.
+type commandContext struct {
+	stdout io.Writer
+	stderr io.Writer
+	now    func() time.Time
+}
 
 // encodeOptions mirrors the encode command flags after parsing. Keeping all
 // user-controlled values in one struct makes the validation and pipeline order
@@ -44,241 +51,141 @@ type decodeOptions struct {
 	keep      bool
 }
 
-// runEncode reads one input file, turns it into protocol frames, renders each
-// frame as a QR PNG, and asks ffmpeg to assemble those PNGs into a video.
-func runEncode(args []string) error {
-	fs := flag.NewFlagSet("encode", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-
-	var opt encodeOptions
-	// The short flags are the preferred CLI. The longer names are kept as
-	// compatibility aliases so older command lines keep working.
-	fs.StringVar(&opt.input, "i", "", "input file")
-	fs.StringVar(&opt.input, "in", "", "input file (alias for -i)")
-	fs.StringVar(&opt.output, "o", "", "output video path")
-	fs.StringVar(&opt.output, "out", "", "output video path (alias for -o)")
-	fs.StringVar(&opt.password, "p", "", "optional password for AES-GCM encryption")
-	fs.StringVar(&opt.password, "password", "", "optional password for AES-GCM encryption (alias for -p)")
-	fs.StringVar(&opt.ffmpeg, "ffmpeg", "", "ffmpeg executable path; falls back to FFMPEG_PATH, then PATH")
-	fs.StringVar(&opt.framesDir, "frames-dir", "", "directory for generated PNG frames")
-	fs.Float64Var(&opt.fps, "fps", defaultFPS, "video frames per second")
-	fs.IntVar(&opt.qrSize, "qr-size", defaultQRSize, "QR image size inside each grid cell")
-	fs.IntVar(&opt.qrVersion, "qr-version", defaultQRVersion, "QR version, 1-40; lower versions make each QR easier to film")
-	fs.IntVar(&opt.videoWidth, "width", defaultVideoWidth, "output video width in pixels")
-	fs.IntVar(&opt.videoWidth, "video-width", defaultVideoWidth, "output video width in pixels (alias for -width)")
-	fs.IntVar(&opt.videoHeight, "height", defaultVideoHeight, "output video height in pixels")
-	fs.IntVar(&opt.videoHeight, "video-height", defaultVideoHeight, "output video height in pixels (alias for -height)")
-	fs.IntVar(&opt.gridSize, "grid-size", defaultGridSize, "QR grid rows and columns per video frame")
-	fs.IntVar(&opt.chunkSize, "chunk-size", 0, "plaintext bytes per data QR; 0 selects a camera-friendly default")
-	fs.IntVar(&opt.crf, "crf", defaultCRF, "x264 CRF; 0 is lossless")
-	fs.BoolVar(&opt.keep, "keep-frames", false, "keep generated PNG frames")
-
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("parse encode flags failed: %w", err)
+// newCommandContext wires command output streams and the clock used by progress
+// throttling. Keeping these injectable makes CLI behavior straightforward to
+// test without touching global stdout, stderr, or time.
+func newCommandContext(stdout io.Writer, stderr io.Writer) commandContext {
+	return commandContext{
+		stdout: stdout,
+		stderr: stderr,
+		now:    time.Now,
 	}
-	// Validate before doing file or ffmpeg work so users get fast, local errors
-	// for invalid command lines.
-	if opt.input == "" {
-		return errors.New("encode requires -i")
-	}
-	if opt.output == "" {
-		return errors.New("encode requires -o")
-	}
-	if opt.fps <= 0 {
-		return errors.New("-fps must be greater than 0")
-	}
-	if opt.qrSize <= 0 {
-		return errors.New("-qr-size must be greater than 0")
-	}
-	if opt.qrVersion < 1 || opt.qrVersion > 40 {
-		return errors.New("-qr-version must be between 1 and 40")
-	}
-	renderOpt := qrRenderOptions{
-		qrSize:      opt.qrSize,
-		qrVersion:   opt.qrVersion,
-		videoWidth:  opt.videoWidth,
-		videoHeight: opt.videoHeight,
-		gridSize:    opt.gridSize,
-	}
-	if err := renderOpt.validate(); err != nil {
-		return fmt.Errorf("validate encode options: %w", err)
-	}
-	if opt.chunkSize < 0 {
-		return errors.New("-chunk-size cannot be negative")
-	}
-	if opt.crf < 0 || opt.crf > 51 {
-		return errors.New("-crf must be between 0 and 51")
-	}
-
-	fmt.Printf("reading input file: %s\n", opt.input)
-	input, err := os.ReadFile(opt.input)
-	if err != nil {
-		return fmt.Errorf("read input file: %w", err)
-	}
-
-	// A zero chunk size means "choose a camera-friendly amount of plaintext that
-	// fits the selected QR version". The check uses the real QR encoder because
-	// capacity depends on version, error correction, and encryption overhead.
-	chunkSize := opt.chunkSize
-	if chunkSize == 0 {
-		chunkSize, err = autoChunkSize(opt.password != "", renderOpt.effectiveQRSize(), opt.qrVersion)
-		if err != nil {
-			return fmt.Errorf("choose automatic chunk size: %w", err)
-		}
-	}
-
-	fmt.Printf("building protocol frames...\n")
-	frames, meta, err := buildTransferFrames(input, filepath.Base(opt.input), opt.password, chunkSize)
-	if err != nil {
-		return fmt.Errorf("build protocol frames: %w", err)
-	}
-
-	// Probe every frame before creating files. This catches a too-small QR
-	// version or manually oversized chunk size with a precise frame number.
-	for _, frame := range frames {
-		if _, err := encodeQRPNG(marshalFrame(frame), renderOpt.effectiveQRSize(), opt.qrVersion); err != nil {
-			return fmt.Errorf("frame %d does not fit QR version %d: %w", frame.Seq, opt.qrVersion, err)
-		}
-	}
-
-	// Generated PNGs are either written to a user-specified empty directory or
-	// to a temporary directory that is removed unless -keep-frames is set.
-	framesDir, cleanup, err := prepareFramesDir(opt.framesDir, "transfergo-encode-*", opt.keep)
-	if err != nil {
-		return fmt.Errorf("prepare encode frames directory: %w", err)
-	}
-	defer cleanup()
-
-	fmt.Printf("rendering QR images...\n")
-	if err := writeQRFrames(frames, framesDir, renderOpt, newProgressPrinter("rendered QR images")); err != nil {
-		return fmt.Errorf("write QR frames: %w", err)
-	}
-	fmt.Printf("encoding video with ffmpeg...\n")
-	if err := encodeVideoWithFFmpeg(opt.ffmpeg, framesDir, opt.output, opt.fps, opt.crf); err != nil {
-		return fmt.Errorf("encode video with ffmpeg: %w", err)
-	}
-
-	fmt.Printf("encoded %s -> %s\n", opt.input, opt.output)
-	fmt.Printf("protocol frames: %d, video frames: %d, data chunks: %d, chunk size: %d bytes, grid: %dx%d, fps: %s, encrypted: %t\n",
-		len(frames), renderedFrameCount(len(frames), renderOpt), meta.ChunkCount, chunkSize, opt.gridSize, opt.gridSize, formatFPS(opt.fps), opt.password != "")
-	if opt.keep {
-		fmt.Printf("frames kept in %s\n", framesDir)
-	}
-	return nil
 }
 
-// runDecode extracts PNG frames from a video, decodes any TransferGo QR payloads
-// it can find, then verifies and reassembles the original file.
-func runDecode(args []string) error {
-	fs := flag.NewFlagSet("decode", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
+// parseEncodeOptions parses only encode flags and validates values that would
+// make the encode pipeline fail later with less helpful errors.
+func (ctx commandContext) parseEncodeOptions(args []string, defaults encodeOptions) (encodeOptions, error) {
+	fs := flag.NewFlagSet("encode", flag.ContinueOnError)
+	fs.SetOutput(ctx.stderr)
 
-	var opt decodeOptions
-	// The short flags are the preferred CLI. The longer names are kept as
-	// compatibility aliases so existing decode commands do not break.
-	fs.StringVar(&opt.input, "i", "", "input video path")
-	fs.StringVar(&opt.input, "in", "", "input video path (alias for -i)")
-	fs.StringVar(&opt.output, "o", "", "output file path; defaults to the original file name from the manifest")
-	fs.StringVar(&opt.output, "out", "", "output file path (alias for -o)")
-	fs.StringVar(&opt.password, "p", "", "password for encrypted videos")
-	fs.StringVar(&opt.password, "password", "", "password for encrypted videos (alias for -p)")
-	fs.StringVar(&opt.ffmpeg, "ffmpeg", "", "ffmpeg executable path; falls back to FFMPEG_PATH, then PATH")
-	fs.StringVar(&opt.framesDir, "frames-dir", "", "directory for extracted PNG frames")
-	fs.Float64Var(&opt.sampleFPS, "sample-fps", defaultSampleFPS, "QR sampling rate while decoding")
-	fs.IntVar(&opt.gridSize, "grid-size", defaultGridSize, "QR grid rows and columns per video frame")
-	fs.BoolVar(&opt.force, "force", false, "overwrite the output file if it exists")
-	fs.BoolVar(&opt.keep, "keep-frames", false, "keep extracted PNG frames")
+	opt := defaults
+	fs.StringVar(&opt.input, "i", opt.input, "input file")
+	fs.StringVar(&opt.input, "in", opt.input, "input file (alias for -i)")
+	fs.StringVar(&opt.output, "o", opt.output, "output video path")
+	fs.StringVar(&opt.output, "out", opt.output, "output video path (alias for -o)")
+	fs.StringVar(&opt.password, "p", opt.password, "optional password for AES-GCM encryption")
+	fs.StringVar(&opt.password, "password", opt.password, "optional password for AES-GCM encryption (alias for -p)")
+	fs.StringVar(&opt.ffmpeg, "ffmpeg", opt.ffmpeg, "ffmpeg executable path; falls back to FFMPEG_PATH, then PATH")
+	fs.StringVar(&opt.framesDir, "frames-dir", opt.framesDir, "directory for generated PNG frames")
+	fs.Float64Var(&opt.fps, "fps", opt.fps, "video frames per second")
+	fs.IntVar(&opt.qrSize, "qr-size", opt.qrSize, "QR image size inside each grid cell")
+	fs.IntVar(&opt.qrVersion, "qr-version", opt.qrVersion, "QR version, 1-40; lower versions make each QR easier to film")
+	fs.IntVar(&opt.videoWidth, "width", opt.videoWidth, "output video width in pixels")
+	fs.IntVar(&opt.videoWidth, "video-width", opt.videoWidth, "output video width in pixels (alias for -width)")
+	fs.IntVar(&opt.videoHeight, "height", opt.videoHeight, "output video height in pixels")
+	fs.IntVar(&opt.videoHeight, "video-height", opt.videoHeight, "output video height in pixels (alias for -height)")
+	fs.IntVar(&opt.gridSize, "grid-size", opt.gridSize, "QR grid rows and columns per video frame")
+	fs.IntVar(&opt.chunkSize, "chunk-size", opt.chunkSize, "plaintext bytes per data QR; 0 selects a camera-friendly default")
+	fs.IntVar(&opt.crf, "crf", opt.crf, "x264 CRF; 0 is lossless")
+	fs.BoolVar(&opt.keep, "keep-frames", opt.keep, "keep generated PNG frames")
 
 	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("parse decode flags: %w", err)
+		return encodeOptions{}, fmt.Errorf("parse encode flags failed: %w", err)
 	}
-	// Decode has fewer required flags: when -o is omitted, the manifest's
-	// original file name becomes the output path.
 	if opt.input == "" {
-		return errors.New("decode requires -i")
+		return encodeOptions{}, errors.New("encode requires -i")
 	}
-	if opt.sampleFPS <= 0 {
-		return errors.New("-sample-fps must be greater than 0")
+	if opt.output == "" {
+		return encodeOptions{}, errors.New("encode requires -o")
+	}
+	if opt.fps <= 0 {
+		return encodeOptions{}, errors.New("-fps must be greater than 0")
+	}
+	if opt.qrSize <= 0 {
+		return encodeOptions{}, errors.New("-qr-size must be greater than 0")
+	}
+	if opt.qrVersion < 1 || opt.qrVersion > 40 {
+		return encodeOptions{}, errors.New("-qr-version must be between 1 and 40")
+	}
+	if opt.videoWidth <= 0 {
+		return encodeOptions{}, errors.New("-width must be greater than 0")
+	}
+	if opt.videoHeight <= 0 {
+		return encodeOptions{}, errors.New("-height must be greater than 0")
 	}
 	if opt.gridSize <= 0 {
-		return errors.New("-grid-size must be greater than 0")
+		return encodeOptions{}, errors.New("-grid-size must be greater than 0")
 	}
+	if opt.chunkSize < 0 {
+		return encodeOptions{}, errors.New("-chunk-size cannot be negative")
+	}
+	if opt.crf < 0 || opt.crf > 51 {
+		return encodeOptions{}, errors.New("-crf must be between 0 and 51")
+	}
+	return opt, nil
+}
 
-	framesDir, cleanup, err := prepareFramesDir(opt.framesDir, "transfergo-decode-*", opt.keep)
-	if err != nil {
-		return fmt.Errorf("prepare decode frames directory: %w", err)
-	}
-	defer cleanup()
+// parseDecodeOptions parses only decode flags and validates the options needed
+// before ffmpeg extraction or frame recovery can start.
+func (ctx commandContext) parseDecodeOptions(args []string, defaults decodeOptions) (decodeOptions, error) {
+	fs := flag.NewFlagSet("decode", flag.ContinueOnError)
+	fs.SetOutput(ctx.stderr)
 
-	// ffmpeg may extract duplicate frames or frames with motion blur. The later
-	// collection step treats those as noisy input and keeps only valid payloads.
-	fmt.Printf("extracting video frames with ffmpeg...\n")
-	if err := extractFramesWithFFmpeg(opt.ffmpeg, opt.input, framesDir, opt.sampleFPS); err != nil {
-		return fmt.Errorf("extract video frames with ffmpeg: %w", err)
-	}
+	opt := defaults
+	fs.StringVar(&opt.input, "i", opt.input, "input video path")
+	fs.StringVar(&opt.input, "in", opt.input, "input video path (alias for -i)")
+	fs.StringVar(&opt.output, "o", opt.output, "output file path; defaults to the original file name from the manifest")
+	fs.StringVar(&opt.output, "out", opt.output, "output file path (alias for -o)")
+	fs.StringVar(&opt.password, "p", opt.password, "password for encrypted videos")
+	fs.StringVar(&opt.password, "password", opt.password, "password for encrypted videos (alias for -p)")
+	fs.StringVar(&opt.ffmpeg, "ffmpeg", opt.ffmpeg, "ffmpeg executable path; falls back to FFMPEG_PATH, then PATH")
+	fs.StringVar(&opt.framesDir, "frames-dir", opt.framesDir, "directory for extracted PNG frames")
+	fs.Float64Var(&opt.sampleFPS, "sample-fps", opt.sampleFPS, "QR sampling rate while decoding")
+	fs.IntVar(&opt.gridSize, "grid-size", opt.gridSize, "QR grid rows and columns per video frame")
+	fs.BoolVar(&opt.force, "force", opt.force, "overwrite the output file if it exists")
+	fs.BoolVar(&opt.keep, "keep-frames", opt.keep, "keep extracted PNG frames")
 
-	paths, err := sortedFramePaths(framesDir)
-	if err != nil {
-		return fmt.Errorf("list extracted frame paths: %w", err)
+	if err := fs.Parse(args); err != nil {
+		return decodeOptions{}, fmt.Errorf("parse decode flags: %w", err)
 	}
-	fmt.Printf("decoding QR images...\n")
-	frames, total, stats, err := collectFramesFromImages(paths, opt.gridSize, newProgressPrinter("decoded QR images"))
-	if err != nil {
-		return fmt.Errorf("collect transfer frames from images: %w", err)
+	if opt.input == "" {
+		return decodeOptions{}, errors.New("decode requires -i")
 	}
-	// restoreFromFrames performs the protocol-level checks: manifest parsing,
-	// optional password verification, missing frame detection, decryption, and
-	// final file hash validation.
-	fmt.Printf("restoring file bytes...\n")
-	meta, output, err := restoreFromFrames(frames, total, opt.password)
-	if err != nil {
-		return fmt.Errorf("restore file bytes: %w", err)
+	if opt.sampleFPS <= 0 {
+		return decodeOptions{}, errors.New("-sample-fps must be greater than 0")
 	}
+	if opt.gridSize <= 0 {
+		return decodeOptions{}, errors.New("-grid-size must be greater than 0")
+	}
+	return opt, nil
+}
 
-	// Prefer an explicit output path, then the manifest file name, then a stable
-	// fallback for videos whose manifest did not carry a name.
-	outputPath := opt.output
-	if outputPath == "" {
-		outputPath = meta.FileName
-		if outputPath == "" {
-			outputPath = "decoded.bin"
-		}
-	}
-	// Refuse to overwrite by default; decode output is often the only recovered
-	// copy of a file, so accidental replacement should require -force.
-	if !opt.force {
-		if _, err := os.Stat(outputPath); err == nil {
-			return fmt.Errorf("output file %q already exists; pass -force to overwrite", outputPath)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("check output file: %w", err)
-		}
-	}
-	if err := os.WriteFile(outputPath, output, 0644); err != nil {
-		return fmt.Errorf("write output file: %w", err)
-	}
+// printUsage intentionally stays short: detailed command flags live on the
+// command-specific FlagSet help, while this text helps users pick a subcommand.
+func (ctx commandContext) printUsage(w io.Writer) {
+	Fprint(w, `usage:
+  transfergo encode -i <file> -o <video.mp4> [-p <password>]
+  transfergo decode -i <video.mp4> [-o <file>] [-p <password>]
 
-	fmt.Printf("decoded %s -> %s\n", opt.input, outputPath)
-	fmt.Printf("frames: %d/%d, extracted images: %d, duplicates: %d, ignored QR payloads: %d, unreadable images: %d\n",
-		len(frames), total, stats.images, stats.duplicates, stats.ignored, stats.decodeFailures)
-	if opt.keep {
-		fmt.Printf("frames kept in %s\n", framesDir)
-	}
-	return nil
+commands:
+  encode  split a file into QR frames and render them into a video with ffmpeg
+  decode  extract QR frames from a recorded video and rebuild the original file
+`)
 }
 
 // newProgressPrinter throttles progress output so long scans stay visible
 // without printing one line per frame on fast machines.
-func newProgressPrinter(label string) progressCallback {
+func (ctx commandContext) newProgressPrinter(label string) func(done int, total int) {
 	var last time.Time
 	return func(done int, total int) {
 		if total <= 0 {
 			return
 		}
-		now := time.Now()
+		now := ctx.now()
 		if done != total && !last.IsZero() && now.Sub(last) < 500*time.Millisecond {
 			return
 		}
 		last = now
-		fmt.Printf("%s: %d/%d\n", label, done, total)
+		Fprintf(ctx.stdout, "%s: %d/%d\n", label, done, total)
 	}
 }

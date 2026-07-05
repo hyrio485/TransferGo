@@ -2,23 +2,19 @@ package core
 
 import (
 	"bytes"
-	"fmt"
-	"image"
-	"image/color"
-	"image/png"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestPlainRoundTripThroughQRImages(t *testing.T) {
+func TestAppPlainRoundTripThroughQRImages(t *testing.T) {
+	app := newAppContext()
 	input := make([]byte, 4096)
 	for i := range input {
 		input[i] = byte(i)
 	}
 
-	frames, meta, err := buildTransferFrames(input, "payload.bin", "", 100)
+	frames, meta, err := app.protocol.buildTransferFrames(input, "payload.bin", "", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,17 +23,11 @@ func TestPlainRoundTripThroughQRImages(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	renderOpt := qrRenderOptions{
-		qrSize:      defaultQRSize,
-		qrVersion:   defaultQRVersion,
-		videoWidth:  defaultVideoWidth,
-		videoHeight: defaultVideoHeight,
-		gridSize:    defaultGridSize,
-	}
-	if err := writeQRFrames(frames, dir, renderOpt, nil); err != nil {
+	renderOpt := testRenderOptions()
+	if err := app.writeTransferFrames(frames, dir, renderOpt, nil); err != nil {
 		t.Fatal(err)
 	}
-	paths, err := sortedFramePaths(dir)
+	paths, err := app.video.sortedFramePaths(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +35,7 @@ func TestPlainRoundTripThroughQRImages(t *testing.T) {
 		t.Fatalf("rendered images = %d, want 5", len(paths))
 	}
 
-	collected, total, stats, err := collectFramesFromImages(paths, renderOpt.gridSize, nil)
+	collected, total, stats, err := app.collectFramesFromImages(paths, renderOpt.gridSize, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +43,7 @@ func TestPlainRoundTripThroughQRImages(t *testing.T) {
 		t.Fatalf("decoded frames = %d, want %d", stats.decoded, len(frames))
 	}
 
-	restoredMeta, output, err := restoreFromFrames(collected, total, "")
+	restoredMeta, output, err := app.protocol.restoreFromFrames(collected, total, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,40 +55,34 @@ func TestPlainRoundTripThroughQRImages(t *testing.T) {
 	}
 }
 
-func TestCollectFramesSkipsNoisyImages(t *testing.T) {
+func TestAppCollectFramesSkipsNoisyImages(t *testing.T) {
+	app := newAppContext()
 	input := []byte("small payload")
-	frames, _, err := buildTransferFrames(input, "noise.txt", "", 8)
+	frames, _, err := app.protocol.buildTransferFrames(input, "noise.txt", "", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	renderOpt := qrRenderOptions{
-		qrSize:      defaultQRSize,
-		qrVersion:   defaultQRVersion,
-		videoWidth:  defaultVideoWidth,
-		videoHeight: defaultVideoHeight,
-		gridSize:    defaultGridSize,
-	}
 	dir := t.TempDir()
 	if err := writeBlankPNG(filepath.Join(dir, "frame_000000.png")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeQRFrames(frames, dir, renderOpt, nil); err != nil {
+	if err := app.writeTransferFrames(frames, dir, testRenderOptions(), nil); err != nil {
 		t.Fatal(err)
 	}
 
-	paths, err := sortedFramePaths(dir)
+	paths, err := app.video.sortedFramePaths(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	collected, total, stats, err := collectFramesFromImages(paths, renderOpt.gridSize, nil)
+	collected, total, stats, err := app.collectFramesFromImages(paths, defaultGridSize, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats.decodeFailures == 0 {
 		t.Fatal("decode failures = 0, want noisy image to be skipped")
 	}
-	_, output, err := restoreFromFrames(collected, total, "")
+	_, output, err := app.protocol.restoreFromFrames(collected, total, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,33 +91,9 @@ func TestCollectFramesSkipsNoisyImages(t *testing.T) {
 	}
 }
 
-func TestEncryptedRoundTripAndWrongPassword(t *testing.T) {
-	input := []byte("secret file contents that should be authenticated before restore")
-
-	frames, _, err := buildTransferFrames(input, "secret.txt", "correct horse", 16)
-	if err != nil {
-		t.Fatal(err)
-	}
-	frameMap := framesToMap(frames)
-
-	if _, _, err := restoreFromFrames(frameMap, uint32(len(frames)), "wrong horse"); err == nil || !strings.Contains(err.Error(), "password check failed") {
-		t.Fatalf("wrong password error = %v, want password check failed", err)
-	}
-
-	meta, output, err := restoreFromFrames(frameMap, uint32(len(frames)), "correct horse")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if meta.FileName != "secret.txt" {
-		t.Fatalf("file name = %q, want secret.txt", meta.FileName)
-	}
-	if !bytes.Equal(output, input) {
-		t.Fatal("restored encrypted bytes do not match input")
-	}
-}
-
-func TestAutoChunkSizeUsesCameraFriendlyDefault(t *testing.T) {
-	chunkSize, err := autoChunkSize(false, defaultQRSize, defaultQRVersion)
+func TestAppAutoChunkSizeUsesCameraFriendlyDefault(t *testing.T) {
+	app := newAppContext()
+	chunkSize, err := app.autoChunkSize(false, defaultQRSize, defaultQRVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,101 +102,28 @@ func TestAutoChunkSizeUsesCameraFriendlyDefault(t *testing.T) {
 	}
 }
 
-func TestMissingFrameFails(t *testing.T) {
-	frames, _, err := buildTransferFrames([]byte("0123456789abcdef"), "split.txt", "", 4)
-	if err != nil {
-		t.Fatal(err)
-	}
-	frameMap := framesToMap(frames)
-	delete(frameMap, 2)
+func TestAppRunRejectsUnknownCommand(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	app := newAppContext()
+	app.commands.stdout = &stdout
+	app.commands.stderr = &stderr
 
-	_, _, err = restoreFromFrames(frameMap, uint32(len(frames)), "")
-	if err == nil || !strings.Contains(err.Error(), "missing frame") {
-		t.Fatalf("missing frame error = %v, want missing frame", err)
+	err := app.Run([]string{"unknown"})
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("Run error = %v, want unknown command", err)
+	}
+	if !strings.Contains(stderr.String(), "usage:") {
+		t.Fatalf("stderr = %q, want usage", stderr.String())
 	}
 }
 
-func TestPrepareFramesDirRejectsStaleFrames(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "frame_000001.png"), []byte("stale"), 0644); err != nil {
-		t.Fatal(err)
+func testRenderOptions() qrRenderOptions {
+	return qrRenderOptions{
+		qrSize:      defaultQRSize,
+		qrVersion:   defaultQRVersion,
+		videoWidth:  defaultVideoWidth,
+		videoHeight: defaultVideoHeight,
+		gridSize:    defaultGridSize,
 	}
-
-	_, _, err := prepareFramesDir(dir, "unused-*", false)
-	if err == nil || !strings.Contains(err.Error(), "already contains frame_*.png") {
-		t.Fatalf("prepareFramesDir error = %v, want stale frame rejection", err)
-	}
-}
-
-func TestPrepareFramesDirDefaultsToCurrentDirectory(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(wd); err != nil {
-			t.Fatal(err)
-		}
-	})
-
-	framesDir, cleanup, err := prepareFramesDir("", "transfergo-encode-*", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cleanup()
-
-	if filepath.Dir(framesDir) != "." {
-		t.Fatalf("frames dir parent = %q, want current directory", filepath.Dir(framesDir))
-	}
-	if !strings.HasPrefix(filepath.Base(framesDir), "transfergo-encode-") {
-		t.Fatalf("frames dir = %q, want transfergo-encode-*", framesDir)
-	}
-	if _, err := os.Stat(filepath.Join(dir, framesDir)); err != nil {
-		t.Fatalf("frames dir was not created under current directory: %v", err)
-	}
-}
-
-func TestResolveFFmpegPath(t *testing.T) {
-	t.Setenv("FFMPEG_PATH", "/env/ffmpeg")
-
-	if got := resolveFFmpegPath("/flag/ffmpeg"); got != "/flag/ffmpeg" {
-		t.Fatalf("explicit ffmpeg path = %q, want /flag/ffmpeg", got)
-	}
-	if got := resolveFFmpegPath(""); got != "/env/ffmpeg" {
-		t.Fatalf("env ffmpeg path = %q, want /env/ffmpeg", got)
-	}
-
-	t.Setenv("FFMPEG_PATH", "")
-	if got := resolveFFmpegPath(""); got != "ffmpeg" {
-		t.Fatalf("default ffmpeg path = %q, want ffmpeg", got)
-	}
-}
-
-func framesToMap(frames []transferFrame) map[uint32]transferFrame {
-	out := make(map[uint32]transferFrame, len(frames))
-	for _, frame := range frames {
-		out[frame.Seq] = frame
-	}
-	return out
-}
-
-func writeBlankPNG(path string) error {
-	img := image.NewRGBA(image.Rect(0, 0, defaultVideoWidth, defaultVideoHeight))
-	for y := 0; y < defaultVideoHeight; y++ {
-		for x := 0; x < defaultVideoWidth; x++ {
-			img.Set(x, y, color.RGBA{R: 20, G: 20, B: 20, A: 255})
-		}
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("create blank PNG file: %w", err)
-	}
-	defer func() {
-		_ = file.Close()
-	}()
-	return png.Encode(file, img)
 }

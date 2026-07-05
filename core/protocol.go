@@ -15,6 +15,8 @@ import (
 )
 
 const (
+	// protocolVersion lets future readers reject incompatible QR payloads before
+	// attempting to parse the rest of the binary frame.
 	protocolVersion = byte(1)
 
 	// Serialized transfer frame layout, in bytes:
@@ -49,20 +51,9 @@ const (
 	aesKeySize       = 32
 	pbkdf2Iterations = 200_000
 
-	// Defaults bias toward filmed-screen decoding: each QR is monochrome, uses a
-	// higher version for capacity, and leaves enough pixels per module for phone
-	// recordings to survive focus, scaling, and compression.
-	defaultFPS         = 3.0
-	defaultSampleFPS   = 9.0
-	defaultQRSize      = 240
-	defaultQRVersion   = 12
-	defaultVideoWidth  = 800
-	defaultVideoHeight = 800
-	defaultGridSize    = 3
-	defaultCRF         = 24
-	defaultChunkSize   = 240
-	maxQRBytePayload   = 2953
-	maxFrameBodyLen    = 1<<16 - 1
+	// maxFrameBodyLen matches the two-byte body length field in the frame
+	// header, so marshaling can fail fast before producing invalid bytes.
+	maxFrameBodyLen = 1<<16 - 1
 
 	// Manifest layout:
 	//   magic "TGM1"
@@ -81,6 +72,12 @@ const (
 // is processed. When it is not encrypted, the marker also rejects random QR data
 // that happens to have the manifest magic.
 var manifestPasswordCheck = []byte("TG-PASS-OK-v1\x00\x00\x00")
+
+// protocolContext owns protocol dependencies. Random bytes are injectable so
+// encryption tests can stay deterministic without touching QR or app code.
+type protocolContext struct {
+	randomBytes func(int) ([]byte, error)
+}
 
 // transferFrame is the protocol unit stored in one QR code. The header fields
 // are authenticated when encryption is enabled, which prevents a valid encrypted
@@ -104,10 +101,15 @@ type manifest struct {
 	SHA256     [sha256.Size]byte
 }
 
+// newProtocolContext wires the production cryptographic random source.
+func newProtocolContext() protocolContext {
+	return protocolContext{randomBytes: cryptoRandomBytes}
+}
+
 // buildTransferFrames creates a manifest frame plus one data frame per chunk.
 // If password is non-empty, the manifest and all data chunks are encrypted with
 // a single key derived from that password and a per-video random salt.
-func buildTransferFrames(input []byte, fileName string, password string, chunkSize int) ([]transferFrame, manifest, error) {
+func (ctx protocolContext) buildTransferFrames(input []byte, fileName string, password string, chunkSize int) ([]transferFrame, manifest, error) {
 	if chunkSize <= 0 {
 		return nil, manifest{}, errors.New("chunk size must be greater than 0")
 	}
@@ -143,7 +145,7 @@ func buildTransferFrames(input []byte, fileName string, password string, chunkSi
 		// The salt is stored only once, in the manifest frame. It is also folded
 		// into the AES-GCM AAD for every frame, binding all frames to one video.
 		var err error
-		salt, err = randomBytes(saltSize)
+		salt, err = ctx.randomBytes(saltSize)
 		if err != nil {
 			return nil, manifest{}, fmt.Errorf("generate encryption salt: %w", err)
 		}
@@ -170,7 +172,7 @@ func buildTransferFrames(input []byte, fileName string, password string, chunkSi
 	if encrypted {
 		// Store salt before the encrypted manifest so decoders can derive the
 		// key before calling AES-GCM Open.
-		body, err := encryptFrameBody(gcm, manifestFrame, manifestPlain, salt)
+		body, err := ctx.encryptFrameBody(gcm, manifestFrame, manifestPlain, salt)
 		if err != nil {
 			return nil, manifest{}, fmt.Errorf("encrypt manifest frame: %w", err)
 		}
@@ -195,7 +197,7 @@ func buildTransferFrames(input []byte, fileName string, password string, chunkSi
 			Total: total,
 		}
 		if encrypted {
-			body, err := encryptFrameBody(gcm, frame, chunk, salt)
+			body, err := ctx.encryptFrameBody(gcm, frame, chunk, salt)
 			if err != nil {
 				return nil, manifest{}, fmt.Errorf("encrypt data frame %d: %w", seq, err)
 			}
@@ -215,7 +217,7 @@ func buildTransferFrames(input []byte, fileName string, password string, chunkSi
 // restoreFromFrames verifies a collected frame set and returns the original
 // bytes. The function is intentionally strict: it rejects missing frames,
 // conflicting metadata, wrong passwords, bad hashes, and unexpected frame kinds.
-func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password string) (manifest, []byte, error) {
+func (ctx protocolContext) restoreFromFrames(frames map[uint32]transferFrame, total uint32, password string) (manifest, []byte, error) {
 	if total == 0 {
 		return manifest{}, nil, errors.New("no transfer frames found")
 	}
@@ -314,7 +316,10 @@ func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password s
 	return meta, result, nil
 }
 
-func marshalFrame(frame transferFrame) []byte {
+// marshalFrame serializes one transfer frame into the exact byte layout stored
+// in a QR payload. Oversized bodies panic because callers validate capacity
+// before rendering.
+func (ctx protocolContext) marshalFrame(frame transferFrame) []byte {
 	if len(frame.Body) > maxFrameBodyLen {
 		panic("frame body too large")
 	}
@@ -334,7 +339,7 @@ func marshalFrame(frame transferFrame) []byte {
 
 // parseFrame reverses marshalFrame and validates enough structure to reject
 // unrelated QR codes before they can affect frame collection.
-func parseFrame(payload []byte) (transferFrame, error) {
+func (ctx protocolContext) parseFrame(payload []byte) (transferFrame, error) {
 	if len(payload) < frameHeaderLen {
 		return transferFrame{}, errors.New("payload too short")
 	}
@@ -431,8 +436,8 @@ func parseManifest(payload []byte) (manifest, error) {
 // encryptFrameBody returns nonce || ciphertext || tag. The nonce is generated
 // per frame and stored beside the ciphertext because GCM needs the same nonce
 // for decryption but does not require it to be secret.
-func encryptFrameBody(gcm cipher.AEAD, frame transferFrame, plaintext []byte, salt []byte) ([]byte, error) {
-	nonce, err := randomBytes(nonceSize)
+func (ctx protocolContext) encryptFrameBody(gcm cipher.AEAD, frame transferFrame, plaintext []byte, salt []byte) ([]byte, error) {
+	nonce, err := ctx.randomBytes(nonceSize)
 	if err != nil {
 		return nil, fmt.Errorf("generate frame nonce: %w", err)
 	}
@@ -481,59 +486,13 @@ func makeGCM(password string, salt []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// randomBytes reads from crypto/rand so salts and nonces are unpredictable.
-func randomBytes(n int) ([]byte, error) {
+// cryptoRandomBytes reads from crypto/rand so salts and nonces are unpredictable.
+func cryptoRandomBytes(n int) ([]byte, error) {
 	out := make([]byte, n)
 	if _, err := rand.Read(out); err != nil {
 		return nil, fmt.Errorf("read random bytes: %w", err)
 	}
 	return out, nil
-}
-
-// autoChunkSize chooses a camera-friendly plaintext chunk size that still fits
-// the requested QR version. The cap is intentionally below the theoretical QR
-// capacity because filmed screens lose fine detail long before the encoder
-// itself runs out of space.
-func autoChunkSize(encrypted bool, qrSize int, qrVersion int) (int, error) {
-	low, high := 1, maxQRBytePayload
-	best := 0
-	for low <= high {
-		mid := low + (high-low)/2
-		if canEncodeChunkSize(mid, encrypted, qrSize, qrVersion) {
-			best = mid
-			low = mid + 1
-		} else {
-			high = mid - 1
-		}
-	}
-	if best == 0 {
-		return 0, fmt.Errorf("no data chunk size fits QR version %d", qrVersion)
-	}
-	if best > defaultChunkSize {
-		return defaultChunkSize, nil
-	}
-	return best, nil
-}
-
-// canEncodeChunkSize builds a representative data frame and asks the QR encoder
-// whether it fits. Encrypted frames reserve space for the GCM nonce and tag.
-func canEncodeChunkSize(chunkSize int, encrypted bool, qrSize int, qrVersion int) bool {
-	bodyLen := chunkSize
-	if encrypted {
-		bodyLen += nonceSize + 16
-	}
-	frame := transferFrame{
-		Flags: 0,
-		Kind:  frameKindData,
-		Seq:   1,
-		Total: 2,
-		Body:  bytes.Repeat([]byte{0x80}, bodyLen),
-	}
-	if encrypted {
-		frame.Flags = frameFlagEncrypted
-	}
-	_, err := encodeQRPNG(marshalFrame(frame), qrSize, qrVersion)
-	return err == nil
 }
 
 // sameFrame treats identical duplicate QR captures as harmless while still

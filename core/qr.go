@@ -9,7 +9,6 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/makiuchi-d/gozxing"
 	gozxingmultiqr "github.com/makiuchi-d/gozxing/multi/qrcode"
@@ -17,28 +16,8 @@ import (
 	qrdecoder "github.com/makiuchi-d/gozxing/qrcode/decoder"
 )
 
-// collectStats records how noisy the extracted image set was. Decode reports
-// these numbers so users can tell the difference between missing payload frames
-// and images that simply were not readable QR codes.
-type collectStats struct {
-	images         int
-	decoded        int
-	ignored        int
-	duplicates     int
-	decodeFailures int
-}
-
-// progressCallback is intentionally tiny so long-running encode/decode stages
-// can report progress without coupling core QR logic to terminal formatting.
-type progressCallback func(done int, total int)
-
-// imageDecodeResult carries one worker result back to the merge loop. Workers
-// never mutate the final frame map, which keeps duplicate detection serialized.
-type imageDecodeResult struct {
-	payloads [][]byte
-	err      error
-}
-
+// pointF stores a floating-point image coordinate used while approximating a
+// filmed screen quadrilateral before warping it back into a square.
 type pointF struct {
 	x float64
 	y float64
@@ -49,16 +28,24 @@ const (
 	// zone entirely. Two modules is a practical compromise for filmed screens.
 	qrEncodeMargin     = 2
 	qrQuietZoneModules = qrEncodeMargin * 2
-	qrCanvasWhite      = 255
-	qrGuideBlack       = 16
-	qrGuideWidth       = 6
+	// qrCanvasWhite and qrGuideBlack are fixed grayscale anchors used for the
+	// generated video canvas and tile borders.
+	qrCanvasWhite = 255
+	qrGuideBlack  = 16
+	// qrGuideWidth makes each tile visible to both humans and simple contrast
+	// detection without crowding the QR quiet zone.
+	qrGuideWidth = 6
 	// High-contrast sampling is used only to find likely QR regions inside a
 	// larger camera frame; the actual QR decoder still validates the payload.
 	qrContrastDistance      = 96
 	qrContrastSampleMinimum = 24
-	qrWarpPadding           = 1.14
+	// qrWarpPadding expands the estimated screen quadrilateral slightly so
+	// clipped QR borders are more likely to survive the perspective warp.
+	qrWarpPadding = 1.14
 )
 
+// qrRenderOptions collects the geometry that both encoding and validation need
+// when multiple QR payloads are packed into one video frame.
 type qrRenderOptions struct {
 	qrSize      int
 	qrVersion   int
@@ -67,6 +54,8 @@ type qrRenderOptions struct {
 	gridSize    int
 }
 
+// validate rejects render options that would make QR codes too small to encode
+// or too large to fit inside the requested grid.
 func (opt qrRenderOptions) validate() error {
 	if opt.qrSize <= 0 {
 		return fmt.Errorf("-qr-size must be greater than 0")
@@ -93,18 +82,25 @@ func (opt qrRenderOptions) validate() error {
 	return nil
 }
 
+// slotsPerImage returns how many protocol frames fit in one rendered video
+// image for the current grid size.
 func (opt qrRenderOptions) slotsPerImage() int {
 	return opt.gridSize * opt.gridSize
 }
 
+// minTileSize returns the limiting tile side in pixels, accounting for non-even
+// divisions of the output canvas.
 func (opt qrRenderOptions) minTileSize() int {
 	return minInt(opt.videoWidth/opt.gridSize, opt.videoHeight/opt.gridSize)
 }
 
+// effectiveQRSize clamps the requested QR size to the available tile size so a
+// user can request a generous size without overflowing the grid.
 func (opt qrRenderOptions) effectiveQRSize() int {
 	return minInt(opt.qrSize, opt.minTileSize())
 }
 
+// tileRect returns the exact canvas rectangle for one zero-based grid slot.
 func (opt qrRenderOptions) tileRect(tile int) image.Rectangle {
 	row := tile / opt.gridSize
 	col := tile % opt.gridSize
@@ -116,6 +112,8 @@ func (opt qrRenderOptions) tileRect(tile int) image.Rectangle {
 	)
 }
 
+// renderedFrameCount computes the PNG count needed to hold all protocol frames
+// once the grid packing factor is applied.
 func renderedFrameCount(protocolFrames int, opt qrRenderOptions) int {
 	if protocolFrames <= 0 {
 		return 0
@@ -124,28 +122,28 @@ func renderedFrameCount(protocolFrames int, opt qrRenderOptions) int {
 	return (protocolFrames + slots - 1) / slots
 }
 
-// writeQRFrames serializes each protocol frame into a zero-padded PNG sequence.
+// writeQRPayloadFrames serializes each payload into a zero-padded PNG sequence.
 // The file naming convention is chosen to match ffmpeg's frame_%06d.png input
 // pattern and to keep lexicographic sorting equal to frame order.
-func writeQRFrames(frames []transferFrame, dir string, opt qrRenderOptions, progress progressCallback) error {
+func writeQRPayloadFrames(payloads [][]byte, dir string, opt qrRenderOptions, progress func(done int, total int)) error {
 	if err := opt.validate(); err != nil {
 		return fmt.Errorf("validate QR render options: %w", err)
 	}
 	qrSize := opt.effectiveQRSize()
 	slots := opt.slotsPerImage()
 
-	for start, imageIndex := 0, 1; start < len(frames); start, imageIndex = start+slots, imageIndex+1 {
+	for start, imageIndex := 0, 1; start < len(payloads); start, imageIndex = start+slots, imageIndex+1 {
 		img := newMosaicCanvas(opt.videoWidth, opt.videoHeight)
 		drawMosaicGuides(img, opt)
-		end := minInt(start+slots, len(frames))
-		for frameIndex := start; frameIndex < end; frameIndex++ {
-			slot := frameIndex - start
-			qrImg, err := encodeQRGray(marshalFrame(frames[frameIndex]), qrSize, opt.qrVersion)
+		end := minInt(start+slots, len(payloads))
+		for payloadIndex := start; payloadIndex < end; payloadIndex++ {
+			slot := payloadIndex - start
+			qrImg, err := encodeQRGray(payloads[payloadIndex], qrSize, opt.qrVersion)
 			if err != nil {
-				return fmt.Errorf("encode QR frame %d: %w", frames[frameIndex].Seq, err)
+				return fmt.Errorf("encode QR payload %d: %w", payloadIndex, err)
 			}
 			if err := drawQRIntoTile(img, qrImg, opt.tileRect(slot)); err != nil {
-				return fmt.Errorf("render QR frame %d: %w", frames[frameIndex].Seq, err)
+				return fmt.Errorf("render QR payload %d: %w", payloadIndex, err)
 			}
 		}
 
@@ -158,7 +156,7 @@ func writeQRFrames(frames []transferFrame, dir string, opt qrRenderOptions, prog
 			return fmt.Errorf("write QR mosaic PNG %d: %w", imageIndex, err)
 		}
 		if progress != nil {
-			progress(imageIndex, renderedFrameCount(len(frames), opt))
+			progress(imageIndex, renderedFrameCount(len(payloads), opt))
 		}
 	}
 	return nil
@@ -179,6 +177,8 @@ func encodeQRPNG(payload []byte, size int, version int) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// encodeQRGray creates the raw grayscale QR bitmap used by both validation and
+// PNG rendering. It keeps payload encoding separate from file I/O.
 func encodeQRGray(payload []byte, size int, version int) (*image.Gray, error) {
 	content := bytesToLatin1String(payload)
 	hints := map[gozxing.EncodeHintType]interface{}{
@@ -216,6 +216,9 @@ func bitMatrixToGray(matrix *gozxing.BitMatrix) *image.Gray {
 	return img
 }
 
+// newMosaicCanvas creates a white RGBA canvas large enough to hold a full QR
+// grid. RGBA is used here because later drawing code writes directly into
+// pixel channels for speed and deterministic output.
 func newMosaicCanvas(width int, height int) *image.RGBA {
 	bounds := image.Rect(0, 0, width, height)
 	img := image.NewRGBA(bounds)
@@ -224,12 +227,16 @@ func newMosaicCanvas(width int, height int) *image.RGBA {
 	return img
 }
 
+// drawMosaicGuides outlines each tile so filmed frames have strong rectangular
+// contrast that can be rediscovered during decode.
 func drawMosaicGuides(dst *image.RGBA, opt qrRenderOptions) {
 	for tile := 0; tile < opt.gridSize*opt.gridSize; tile++ {
 		drawTileGuide(dst, opt.tileRect(tile))
 	}
 }
 
+// drawTileGuide paints a simple dark border around one tile. Very small tiles
+// skip the guide because the border would consume too much QR space.
 func drawTileGuide(dst *image.RGBA, rect image.Rectangle) {
 	guide := qrGuideWidth
 	if rect.Dx() < guide*6 || rect.Dy() < guide*6 {
@@ -273,6 +280,8 @@ func drawQRIntoTile(dst *image.RGBA, qr *image.Gray, tile image.Rectangle) error
 	return nil
 }
 
+// decodeQRCodePayloads loads one extracted image and returns every unique QR
+// payload found by the layered decode strategy.
 func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -294,6 +303,9 @@ func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
 	return payloads, nil
 }
 
+// decodeQRCodePayloadsFromImage tries the whole image first, then cropped and
+// warped candidates. This keeps perfect generated frames fast while giving
+// filmed or tilted captures extra recovery attempts.
 func decodeQRCodePayloadsFromImage(img image.Image, gridSize int) [][]byte {
 	if gridSize <= 0 {
 		gridSize = defaultGridSize
@@ -323,6 +335,8 @@ func decodeQRCodePayloadsFromImage(img image.Image, gridSize int) [][]byte {
 	return acc.payloads
 }
 
+// addSingleDecode tries the ordinary QR reader and records the payload if it
+// succeeds. Decode failures are expected for many candidate crops.
 func addSingleDecode(acc *payloadAccumulator, img image.Image) {
 	payload, err := decodeQRCodeBytesFromImage(img)
 	if err == nil {
@@ -330,6 +344,8 @@ func addSingleDecode(acc *payloadAccumulator, img image.Image) {
 	}
 }
 
+// addMultipleDecode uses the multi-QR reader for full mosaics or larger crops
+// that may contain several QR codes at once.
 func addMultipleDecode(acc *payloadAccumulator, img image.Image) {
 	payloads, err := decodeMultipleQRCodeBytesFromImage(img)
 	if err != nil {
@@ -356,6 +372,8 @@ func decodeQRCodeBytesFromImage(img image.Image) ([]byte, error) {
 	return qrResultBytes(result)
 }
 
+// decodeMultipleQRCodeBytesFromImage decodes every QR code the multi-reader can
+// identify in one image candidate.
 func decodeMultipleQRCodeBytesFromImage(img image.Image) ([][]byte, error) {
 	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
 	if err != nil {
@@ -376,6 +394,8 @@ func decodeMultipleQRCodeBytesFromImage(img image.Image) ([][]byte, error) {
 	return payloads, nil
 }
 
+// qrDecodeHints centralizes gozxing decode options so single and multi readers
+// interpret TransferGo payloads the same way.
 func qrDecodeHints() map[gozxing.DecodeHintType]interface{} {
 	// TRY_HARDER costs more CPU but is useful for frames extracted from filmed
 	// video, where blur, scaling, and compression artifacts are common.
@@ -386,6 +406,8 @@ func qrDecodeHints() map[gozxing.DecodeHintType]interface{} {
 	}
 }
 
+// qrResultBytes extracts exact protocol bytes from a gozxing result, preferring
+// byte segments over text because the payload is binary data.
 func qrResultBytes(result *gozxing.Result) ([]byte, error) {
 	// Prefer raw byte segments when available. This avoids any ambiguity in text
 	// conversion and is the most faithful representation of the QR payload.
@@ -404,15 +426,19 @@ func qrResultBytes(result *gozxing.Result) ([]byte, error) {
 	return latin1StringToBytes(result.GetText())
 }
 
+// payloadAccumulator keeps decode retries from returning the same QR payload
+// multiple times when several candidate crops overlap.
 type payloadAccumulator struct {
 	seen     map[string]struct{}
 	payloads [][]byte
 }
 
+// newPayloadAccumulator starts an empty de-duplicating payload collector.
 func newPayloadAccumulator() *payloadAccumulator {
 	return &payloadAccumulator{seen: make(map[string]struct{})}
 }
 
+// add stores a defensive copy of a payload if it has not already been seen.
 func (acc *payloadAccumulator) add(payload []byte) {
 	key := string(payload)
 	if _, ok := acc.seen[key]; ok {
@@ -441,6 +467,8 @@ func imageToGray(src image.Image, rect image.Rectangle) *image.Gray {
 	return dst
 }
 
+// cropGray copies one grayscale candidate region into a zero-based image so the
+// QR decoder does not need to handle source-coordinate offsets.
 func cropGray(src *image.Gray, rect image.Rectangle) *image.Gray {
 	rect = rect.Intersect(src.Bounds())
 	dst := image.NewGray(image.Rect(0, 0, rect.Dx(), rect.Dy()))
@@ -448,6 +476,9 @@ func cropGray(src *image.Gray, rect image.Rectangle) *image.Gray {
 	return dst
 }
 
+// decodeCandidateRects returns square-ish regions worth retrying when the whole
+// frame decode fails. The generated canvas is square, but phone recordings may
+// include surrounding screen or camera background.
 func decodeCandidateRects(img image.Image) []image.Rectangle {
 	bounds := img.Bounds()
 	rects := []image.Rectangle{bounds}
@@ -458,6 +489,8 @@ func decodeCandidateRects(img image.Image) []image.Rectangle {
 	return rects
 }
 
+// appendUniqueRect keeps the candidate list compact so the same crop is not
+// decoded repeatedly.
 func appendUniqueRect(rects []image.Rectangle, rect image.Rectangle) []image.Rectangle {
 	if rect.Empty() {
 		return rects
@@ -470,6 +503,8 @@ func appendUniqueRect(rects []image.Rectangle, rect image.Rectangle) []image.Rec
 	return append(rects, rect)
 }
 
+// centeredSquare is the cheapest fallback crop for recordings that preserve the
+// video in the middle of a wider camera frame.
 func centeredSquare(bounds image.Rectangle) image.Rectangle {
 	side := minInt(bounds.Dx(), bounds.Dy())
 	x0 := bounds.Min.X + (bounds.Dx()-side)/2
@@ -561,6 +596,8 @@ func contrastContentWarp(img image.Image) (image.Image, bool) {
 	return warpQuadToSquare(img, quad, side), true
 }
 
+// expandQuad grows a detected quadrilateral away from its center to recover
+// QR quiet zones that might sit just outside the contrast extrema.
 func expandQuad(quad [4]pointF, scale float64) [4]pointF {
 	var center pointF
 	for _, p := range quad {
@@ -578,6 +615,8 @@ func expandQuad(quad [4]pointF, scale float64) [4]pointF {
 	return quad
 }
 
+// warpQuadToSquare samples an approximate screen quadrilateral into a square
+// image, giving the QR decoder a front-facing candidate.
 func warpQuadToSquare(src image.Image, quad [4]pointF, side int) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, side, side))
 	for y := 0; y < side; y++ {
@@ -591,6 +630,8 @@ func warpQuadToSquare(src image.Image, quad [4]pointF, side int) *image.RGBA {
 	return dst
 }
 
+// bilinearPoint maps normalized square coordinates into the source
+// quadrilateral used by warpQuadToSquare.
 func bilinearPoint(quad [4]pointF, u float64, v float64) pointF {
 	tl, tr, br, bl := quad[0], quad[1], quad[2], quad[3]
 	return pointF{
@@ -599,6 +640,8 @@ func bilinearPoint(quad [4]pointF, u float64, v float64) pointF {
 	}
 }
 
+// sampleImageNearest reads the closest source pixel and returns white for
+// out-of-bounds samples so warped edges remain scanner-friendly.
 func sampleImageNearest(img image.Image, x float64, y float64) color.Color {
 	bounds := img.Bounds()
 	ix := int(x + 0.5)
@@ -609,10 +652,14 @@ func sampleImageNearest(img image.Image, x float64, y float64) color.Color {
 	return img.At(ix, iy)
 }
 
+// luminance converts 16-bit RGBA color channels into an 8-bit perceptual
+// brightness value used by contrast detection.
 func luminance(r uint32, g uint32, b uint32) uint8 {
 	return uint8((299*int(r>>8) + 587*int(g>>8) + 114*int(b>>8)) / 1000)
 }
 
+// isHighContrastPixel reports whether a pixel is close enough to black or white
+// to plausibly belong to a QR mosaic or guide border.
 func isHighContrastPixel(c color.Color) bool {
 	r, g, b, a := c.RGBA()
 	if a == 0 {
@@ -622,10 +669,13 @@ func isHighContrastPixel(c color.Color) bool {
 	return value <= qrContrastDistance || value >= 255-qrContrastDistance
 }
 
+// expandRect pads a candidate rectangle while keeping it inside image bounds.
 func expandRect(rect image.Rectangle, padding int, bounds image.Rectangle) image.Rectangle {
 	return image.Rect(rect.Min.X-padding, rect.Min.Y-padding, rect.Max.X+padding, rect.Max.Y+padding).Intersect(bounds)
 }
 
+// squareAroundRect expands a candidate to a bounded square because generated
+// TransferGo videos use square canvases.
 func squareAroundRect(rect image.Rectangle, bounds image.Rectangle) image.Rectangle {
 	side := maxInt(rect.Dx(), rect.Dy())
 	side = minInt(side, minInt(bounds.Dx(), bounds.Dy()))
@@ -648,6 +698,8 @@ func squareAroundRect(rect image.Rectangle, bounds image.Rectangle) image.Rectan
 	return image.Rect(x0, y0, x0+side, y0+side)
 }
 
+// gridCellRects splits one candidate image into the same grid layout used while
+// encoding, allowing each tile to be decoded independently.
 func gridCellRects(bounds image.Rectangle, gridSize int) []image.Rectangle {
 	rects := make([]image.Rectangle, 0, gridSize*gridSize)
 	for row := 0; row < gridSize; row++ {
@@ -686,95 +738,8 @@ func latin1StringToBytes(text string) ([]byte, error) {
 	return out, nil
 }
 
-// collectFramesFromImages decodes every extracted PNG and keeps only valid
-// TransferGo frames. Image decoding is parallelized because each extracted frame
-// is independent, while protocol merging stays on the caller goroutine so
-// sequence de-duplication and conflict checks remain simple.
-func collectFramesFromImages(paths []string, gridSize int, progress progressCallback) (map[uint32]transferFrame, uint32, collectStats, error) {
-	frames := make(map[uint32]transferFrame)
-	var total uint32
-	stats := collectStats{images: len(paths)}
-	if len(paths) == 0 {
-		return nil, 0, stats, fmt.Errorf("no extracted image(s) found")
-	}
-
-	workerCount := minInt(runtime.NumCPU(), len(paths))
-	jobs := make(chan string)
-	results := make(chan imageDecodeResult)
-
-	for worker := 0; worker < workerCount; worker++ {
-		go func() {
-			for path := range jobs {
-				payloads, err := decodeQRCodePayloads(path, gridSize)
-				results <- imageDecodeResult{payloads: payloads, err: err}
-			}
-		}()
-	}
-	go func() {
-		for _, path := range paths {
-			jobs <- path
-		}
-		close(jobs)
-	}()
-
-	for done := 1; done <= len(paths); done++ {
-		result := <-results
-		if result.err != nil {
-			stats.decodeFailures++
-		} else {
-			for _, payload := range result.payloads {
-				// A readable QR might belong to another app or an older protocol.
-				// Treat it as noise rather than aborting the whole decode.
-				frame, err := parseFrame(payload)
-				if err != nil {
-					stats.ignored++
-					continue
-				}
-				stats.decoded++
-				if total == 0 {
-					total = frame.Total
-				} else if total != frame.Total {
-					return nil, 0, stats, fmt.Errorf("frame %d reports total %d, expected %d", frame.Seq, frame.Total, total)
-				}
-				if existing, ok := frames[frame.Seq]; ok {
-					// Duplicate captures are expected when sample FPS is higher than
-					// the source video FPS. Identical duplicates are harmless;
-					// different bytes for the same sequence mean the recording is
-					// ambiguous.
-					if !sameFrame(existing, frame) {
-						return nil, 0, stats, fmt.Errorf("conflicting duplicate frame %d", frame.Seq)
-					}
-					stats.duplicates++
-					continue
-				}
-				frames[frame.Seq] = frame
-			}
-		}
-		if progress != nil {
-			progress(done, len(paths))
-		}
-	}
-
-	if total == 0 {
-		return nil, 0, stats, fmt.Errorf("no TransferGo QR frames decoded from %d extracted image(s)", len(paths))
-	}
-	return frames, total, stats, nil
-}
-
+// minRenderedQRSize returns the module count for a QR version plus the quiet
+// zone pixels required by the encoder margin.
 func minRenderedQRSize(version int) int {
 	return 21 + 4*(version-1) + qrQuietZoneModules*2
-}
-
-func minInt(a int, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
