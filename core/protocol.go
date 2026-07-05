@@ -145,17 +145,17 @@ func buildTransferFrames(input []byte, fileName string, password string, chunkSi
 		var err error
 		salt, err = randomBytes(saltSize)
 		if err != nil {
-			return nil, manifest{}, err
+			return nil, manifest{}, fmt.Errorf("generate encryption salt: %w", err)
 		}
 		gcm, err = makeGCM(password, salt)
 		if err != nil {
-			return nil, manifest{}, err
+			return nil, manifest{}, fmt.Errorf("create encryption cipher: %w", err)
 		}
 	}
 
 	manifestPlain, err := marshalManifest(meta)
 	if err != nil {
-		return nil, manifest{}, err
+		return nil, manifest{}, fmt.Errorf("marshal manifest: %w", err)
 	}
 
 	frames := make([]transferFrame, 0, total)
@@ -172,7 +172,7 @@ func buildTransferFrames(input []byte, fileName string, password string, chunkSi
 		// key before calling AES-GCM Open.
 		body, err := encryptFrameBody(gcm, manifestFrame, manifestPlain, salt)
 		if err != nil {
-			return nil, manifest{}, err
+			return nil, manifest{}, fmt.Errorf("encrypt manifest frame: %w", err)
 		}
 		manifestFrame.Body = append(append([]byte{}, salt...), body...)
 	} else {
@@ -197,7 +197,7 @@ func buildTransferFrames(input []byte, fileName string, password string, chunkSi
 		if encrypted {
 			body, err := encryptFrameBody(gcm, frame, chunk, salt)
 			if err != nil {
-				return nil, manifest{}, err
+				return nil, manifest{}, fmt.Errorf("encrypt data frame %d: %w", seq, err)
 			}
 			frame.Body = body
 		} else {
@@ -247,7 +247,7 @@ func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password s
 		var err error
 		gcm, err = makeGCM(password, salt)
 		if err != nil {
-			return manifest{}, nil, err
+			return manifest{}, nil, fmt.Errorf("create decryption cipher: %w", err)
 		}
 		manifestPlain, err = decryptFrameBody(gcm, manifestFrame, manifestFrame.Body[saltSize:], salt)
 		if err != nil {
@@ -262,7 +262,7 @@ func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password s
 		if encrypted {
 			return manifest{}, nil, errors.New("password check failed")
 		}
-		return manifest{}, nil, err
+		return manifest{}, nil, fmt.Errorf("parse manifest: %w", err)
 	}
 	if meta.ChunkCount != total-1 {
 		return manifest{}, nil, fmt.Errorf("manifest chunk count %d does not match frame total %d", meta.ChunkCount, total)
@@ -296,7 +296,7 @@ func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password s
 			chunk = frame.Body
 		}
 		if _, err := output.Write(chunk); err != nil {
-			return manifest{}, nil, err
+			return manifest{}, nil, fmt.Errorf("assemble output bytes: %w", err)
 		}
 	}
 
@@ -434,7 +434,7 @@ func parseManifest(payload []byte) (manifest, error) {
 func encryptFrameBody(gcm cipher.AEAD, frame transferFrame, plaintext []byte, salt []byte) ([]byte, error) {
 	nonce, err := randomBytes(nonceSize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate frame nonce: %w", err)
 	}
 	aad := frameAAD(frame, salt)
 	sealed := gcm.Seal(nil, nonce, plaintext, aad)
@@ -472,11 +472,11 @@ func frameAAD(frame transferFrame, salt []byte) []byte {
 func makeGCM(password string, salt []byte) (cipher.AEAD, error) {
 	key, err := pbkdf2.Key(sha256.New, password, salt, pbkdf2Iterations, aesKeySize)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("derive encryption key: %w", err)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create AES cipher: %w", err)
 	}
 	return cipher.NewGCM(block)
 }
@@ -485,7 +485,7 @@ func makeGCM(password string, salt []byte) (cipher.AEAD, error) {
 func randomBytes(n int) ([]byte, error) {
 	out := make([]byte, n)
 	if _, err := rand.Read(out); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read random bytes: %w", err)
 	}
 	return out, nil
 }

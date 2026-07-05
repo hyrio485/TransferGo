@@ -20,11 +20,11 @@ import (
 func prepareFramesDir(dir string, pattern string, keep bool) (string, func(), error) {
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("create frames directory: %w", err)
 		}
 		existing, err := filepath.Glob(filepath.Join(dir, "frame_*.png"))
 		if err != nil {
-			return "", nil, err
+			return "", nil, fmt.Errorf("check existing frame files: %w", err)
 		}
 		if len(existing) > 0 {
 			return "", nil, fmt.Errorf("%s already contains frame_*.png files; choose an empty frames directory", dir)
@@ -34,7 +34,7 @@ func prepareFramesDir(dir string, pattern string, keep bool) (string, func(), er
 
 	tmp := strings.Replace(pattern, "*", time.Now().Format("20060102150405_000000000"), 1)
 	if err := os.Mkdir(tmp, 0755); err != nil {
-		return "", nil, err
+		return "", nil, fmt.Errorf("create temporary frames directory: %w", err)
 	}
 	cleanup := func() {
 		// Cleanup is best-effort because the main operation has already finished;
@@ -51,7 +51,7 @@ func prepareFramesDir(dir string, pattern string, keep bool) (string, func(), er
 func sortedFramePaths(dir string) ([]string, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "frame_*.png"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("glob frame files: %w", err)
 	}
 	sort.Strings(paths)
 	return paths, nil
@@ -77,7 +77,10 @@ func encodeVideoWithFFmpeg(ffmpegPath string, framesDir string, output string, f
 		"-pix_fmt", "yuv420p",
 		output,
 	}
-	return runCommand(ffmpegPath, args...)
+	if err := runCommand(ffmpegPath, args...); err != nil {
+		return fmt.Errorf("run ffmpeg encode command: %w", err)
+	}
+	return nil
 }
 
 // extractFramesWithFFmpeg samples the input video into PNGs. Sampling more often
@@ -97,7 +100,10 @@ func extractFramesWithFFmpeg(ffmpegPath string, input string, framesDir string, 
 		"-vf", "fps=" + formatFPS(sampleFPS),
 		filepath.Join(framesDir, "frame_%06d.png"),
 	}
-	return runCommand(ffmpegPath, args...)
+	if err := runCommand(ffmpegPath, args...); err != nil {
+		return fmt.Errorf("run ffmpeg extract command: %w", err)
+	}
+	return nil
 }
 
 // resolveFFmpegPath applies the documented lookup order: explicit -ffmpeg,
@@ -122,9 +128,9 @@ func runCommand(name string, args ...string) error {
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
-			return err
+			return fmt.Errorf("run command %s: %w", name, err)
 		}
-		return fmt.Errorf("%w: %s", err, msg)
+		return fmt.Errorf("run command %s: %w: %s", name, err, msg)
 	}
 	return nil
 }

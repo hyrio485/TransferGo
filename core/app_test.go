@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -232,7 +233,7 @@ func writeBlankPNG(path string) error {
 	}
 	file, err := os.Create(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("create blank PNG file: %w", err)
 	}
 	defer func() {
 		_ = file.Close()

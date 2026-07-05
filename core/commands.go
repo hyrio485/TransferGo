@@ -101,7 +101,7 @@ func runEncode(args []string) error {
 		gridSize:    opt.gridSize,
 	}
 	if err := renderOpt.validate(); err != nil {
-		return err
+		return fmt.Errorf("validate encode options: %w", err)
 	}
 	if opt.chunkSize < 0 {
 		return errors.New("-chunk-size cannot be negative")
@@ -113,7 +113,7 @@ func runEncode(args []string) error {
 	fmt.Printf("reading input file: %s\n", opt.input)
 	input, err := os.ReadFile(opt.input)
 	if err != nil {
-		return err
+		return fmt.Errorf("read input file: %w", err)
 	}
 
 	// A zero chunk size means "choose a camera-friendly amount of plaintext that
@@ -123,14 +123,14 @@ func runEncode(args []string) error {
 	if chunkSize == 0 {
 		chunkSize, err = autoChunkSize(opt.password != "", renderOpt.effectiveQRSize(), opt.qrVersion)
 		if err != nil {
-			return err
+			return fmt.Errorf("choose automatic chunk size: %w", err)
 		}
 	}
 
 	fmt.Printf("building protocol frames...\n")
 	frames, meta, err := buildTransferFrames(input, filepath.Base(opt.input), opt.password, chunkSize)
 	if err != nil {
-		return err
+		return fmt.Errorf("build protocol frames: %w", err)
 	}
 
 	// Probe every frame before creating files. This catches a too-small QR
@@ -145,17 +145,17 @@ func runEncode(args []string) error {
 	// to a temporary directory that is removed unless -keep-frames is set.
 	framesDir, cleanup, err := prepareFramesDir(opt.framesDir, "transfergo-encode-*", opt.keep)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare encode frames directory: %w", err)
 	}
 	defer cleanup()
 
 	fmt.Printf("rendering QR images...\n")
 	if err := writeQRFrames(frames, framesDir, renderOpt, newProgressPrinter("rendered QR images")); err != nil {
-		return err
+		return fmt.Errorf("write QR frames: %w", err)
 	}
 	fmt.Printf("encoding video with ffmpeg...\n")
 	if err := encodeVideoWithFFmpeg(opt.ffmpeg, framesDir, opt.output, opt.fps, opt.crf); err != nil {
-		return err
+		return fmt.Errorf("encode video with ffmpeg: %w", err)
 	}
 
 	fmt.Printf("encoded %s -> %s\n", opt.input, opt.output)
@@ -190,7 +190,7 @@ func runDecode(args []string) error {
 	fs.BoolVar(&opt.keep, "keep-frames", false, "keep extracted PNG frames")
 
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse decode flags: %w", err)
 	}
 	// Decode has fewer required flags: when -o is omitted, the manifest's
 	// original file name becomes the output path.
@@ -206,7 +206,7 @@ func runDecode(args []string) error {
 
 	framesDir, cleanup, err := prepareFramesDir(opt.framesDir, "transfergo-decode-*", opt.keep)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare decode frames directory: %w", err)
 	}
 	defer cleanup()
 
@@ -214,17 +214,17 @@ func runDecode(args []string) error {
 	// collection step treats those as noisy input and keeps only valid payloads.
 	fmt.Printf("extracting video frames with ffmpeg...\n")
 	if err := extractFramesWithFFmpeg(opt.ffmpeg, opt.input, framesDir, opt.sampleFPS); err != nil {
-		return err
+		return fmt.Errorf("extract video frames with ffmpeg: %w", err)
 	}
 
 	paths, err := sortedFramePaths(framesDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("list extracted frame paths: %w", err)
 	}
 	fmt.Printf("decoding QR images...\n")
 	frames, total, stats, err := collectFramesFromImages(paths, opt.gridSize, newProgressPrinter("decoded QR images"))
 	if err != nil {
-		return err
+		return fmt.Errorf("collect transfer frames from images: %w", err)
 	}
 	// restoreFromFrames performs the protocol-level checks: manifest parsing,
 	// optional password verification, missing frame detection, decryption, and
@@ -232,7 +232,7 @@ func runDecode(args []string) error {
 	fmt.Printf("restoring file bytes...\n")
 	meta, output, err := restoreFromFrames(frames, total, opt.password)
 	if err != nil {
-		return err
+		return fmt.Errorf("restore file bytes: %w", err)
 	}
 
 	// Prefer an explicit output path, then the manifest file name, then a stable
@@ -250,11 +250,11 @@ func runDecode(args []string) error {
 		if _, err := os.Stat(outputPath); err == nil {
 			return fmt.Errorf("output file %q already exists; pass -force to overwrite", outputPath)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return fmt.Errorf("check output file: %w", err)
 		}
 	}
 	if err := os.WriteFile(outputPath, output, 0644); err != nil {
-		return err
+		return fmt.Errorf("write output file: %w", err)
 	}
 
 	fmt.Printf("decoded %s -> %s\n", opt.input, outputPath)

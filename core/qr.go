@@ -129,7 +129,7 @@ func renderedFrameCount(protocolFrames int, opt qrRenderOptions) int {
 // pattern and to keep lexicographic sorting equal to frame order.
 func writeQRFrames(frames []transferFrame, dir string, opt qrRenderOptions, progress progressCallback) error {
 	if err := opt.validate(); err != nil {
-		return err
+		return fmt.Errorf("validate QR render options: %w", err)
 	}
 	qrSize := opt.effectiveQRSize()
 	slots := opt.slotsPerImage()
@@ -151,11 +151,11 @@ func writeQRFrames(frames []transferFrame, dir string, opt qrRenderOptions, prog
 
 		var buf bytes.Buffer
 		if err := png.Encode(&buf, img); err != nil {
-			return err
+			return fmt.Errorf("encode QR mosaic PNG %d: %w", imageIndex, err)
 		}
 		path := filepath.Join(dir, fmt.Sprintf("frame_%06d.png", imageIndex))
 		if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
-			return err
+			return fmt.Errorf("write QR mosaic PNG %d: %w", imageIndex, err)
 		}
 		if progress != nil {
 			progress(imageIndex, renderedFrameCount(len(frames), opt))
@@ -170,11 +170,11 @@ func writeQRFrames(frames []transferFrame, dir string, opt qrRenderOptions, prog
 func encodeQRPNG(payload []byte, size int, version int) ([]byte, error) {
 	img, err := encodeQRGray(payload, size, version)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encode QR image: %w", err)
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encode QR PNG: %w", err)
 	}
 	return buf.Bytes(), nil
 }
@@ -192,7 +192,7 @@ func encodeQRGray(payload []byte, size int, version int) (*image.Gray, error) {
 
 	matrix, err := gozxingqr.NewQRCodeWriter().Encode(content, gozxing.BarcodeFormat_QR_CODE, size, size, hints)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("write QR matrix: %w", err)
 	}
 
 	return bitMatrixToGray(matrix), nil
@@ -276,7 +276,7 @@ func drawQRIntoTile(dst *image.RGBA, qr *image.Gray, tile image.Rectangle) error
 func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open QR image: %w", err)
 	}
 	defer func() {
 		_ = file.Close()
@@ -284,7 +284,7 @@ func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
 
 	img, _, err := image.Decode(file)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode QR image: %w", err)
 	}
 
 	payloads := decodeQRCodePayloadsFromImage(img, gridSize)
@@ -346,12 +346,12 @@ func addMultipleDecode(acc *payloadAccumulator, img image.Image) {
 func decodeQRCodeBytesFromImage(img image.Image) ([]byte, error) {
 	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create QR bitmap: %w", err)
 	}
 
 	result, err := gozxingqr.NewQRCodeReader().Decode(bmp, qrDecodeHints())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode QR bitmap: %w", err)
 	}
 	return qrResultBytes(result)
 }
@@ -359,11 +359,11 @@ func decodeQRCodeBytesFromImage(img image.Image) ([]byte, error) {
 func decodeMultipleQRCodeBytesFromImage(img image.Image) ([][]byte, error) {
 	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create multi QR bitmap: %w", err)
 	}
 	results, err := gozxingmultiqr.NewQRCodeMultiReader().DecodeMultiple(bmp, qrDecodeHints())
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode multiple QR bitmaps: %w", err)
 	}
 
 	payloads := make([][]byte, 0, len(results))
