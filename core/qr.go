@@ -38,8 +38,8 @@ const (
 	qrWarpPadding = 1.14
 )
 
-// qrRenderOptions 收集几何参数，供多个二维码载荷打包进一个视频帧时的编码和校验共同使用。
-type qrRenderOptions struct {
+// QRRenderOptions 收集几何参数，供多个二维码载荷打包进一个视频帧时的编码和校验共同使用。
+type QRRenderOptions struct {
 	qrSize      int
 	qrVersion   int
 	videoWidth  int
@@ -47,8 +47,8 @@ type qrRenderOptions struct {
 	gridSize    int
 }
 
-// validate 拒绝那些会让二维码小到无法编码，或大到无法放入指定网格的渲染选项。
-func (opt qrRenderOptions) validate() error {
+// Validate 拒绝那些会让二维码小到无法编码，或大到无法放入指定网格的渲染选项。
+func (opt QRRenderOptions) Validate() error {
 	if opt.qrSize <= 0 {
 		return fmt.Errorf("-qr-size must be greater than 0")
 	}
@@ -75,22 +75,22 @@ func (opt qrRenderOptions) validate() error {
 }
 
 // slotsPerImage 返回在当前网格大小下，一张渲染后视频图片能容纳多少协议帧。
-func (opt qrRenderOptions) slotsPerImage() int {
+func (opt QRRenderOptions) slotsPerImage() int {
 	return opt.gridSize * opt.gridSize
 }
 
 // minTileSize 返回限制性的格子边长，单位为像素，并考虑输出画布无法均匀整除的情况。
-func (opt qrRenderOptions) minTileSize() int {
+func (opt QRRenderOptions) minTileSize() int {
 	return minInt(opt.videoWidth/opt.gridSize, opt.videoHeight/opt.gridSize)
 }
 
-// effectiveQRSize 把请求的二维码尺寸限制到可用格子尺寸内，让用户可以请求偏大的尺寸而不溢出网格。
-func (opt qrRenderOptions) effectiveQRSize() int {
+// EffectiveQRSize 把请求的二维码尺寸限制到可用格子尺寸内，让用户可以请求偏大的尺寸而不溢出网格。
+func (opt QRRenderOptions) EffectiveQRSize() int {
 	return minInt(opt.qrSize, opt.minTileSize())
 }
 
 // tileRect 返回某个从 0 开始的网格槽位在画布上的精确矩形。
-func (opt qrRenderOptions) tileRect(tile int) image.Rectangle {
+func (opt QRRenderOptions) tileRect(tile int) image.Rectangle {
 	row := tile / opt.gridSize
 	col := tile % opt.gridSize
 	return image.Rect(
@@ -101,8 +101,8 @@ func (opt qrRenderOptions) tileRect(tile int) image.Rectangle {
 	)
 }
 
-// renderedFrameCount 计算应用网格打包系数后，容纳所有协议帧需要多少张 PNG。
-func renderedFrameCount(protocolFrames int, opt qrRenderOptions) int {
+// RenderedFrameCount 计算应用网格打包系数后，容纳所有协议帧需要多少张 PNG。
+func RenderedFrameCount(protocolFrames int, opt QRRenderOptions) int {
 	if protocolFrames <= 0 {
 		return 0
 	}
@@ -110,12 +110,12 @@ func renderedFrameCount(protocolFrames int, opt qrRenderOptions) int {
 	return (protocolFrames + slots - 1) / slots
 }
 
-// writeQRPayloadFrames 把每个载荷序列化为带零填充的 PNG 序列。文件命名约定用于匹配 ffmpeg 的 frame_%06d.png 输入模式，并让字典序排序等同于帧顺序。
-func writeQRPayloadFrames(payloads [][]byte, dir string, opt qrRenderOptions, progress func(done int, total int)) error {
-	if err := opt.validate(); err != nil {
+// WriteQRPayloadFrames 把每个载荷序列化为带零填充的 PNG 序列。文件命名约定用于匹配 ffmpeg 的 frame_%06d.png 输入模式，并让字典序排序等同于帧顺序。
+func WriteQRPayloadFrames(payloads [][]byte, dir string, opt QRRenderOptions, progress func(done int, total int)) error {
+	if err := opt.Validate(); err != nil {
 		return fmt.Errorf("validate QR render options: %w", err)
 	}
-	qrSize := opt.effectiveQRSize()
+	qrSize := opt.EffectiveQRSize()
 	slots := opt.slotsPerImage()
 
 	for start, imageIndex := 0, 1; start < len(payloads); start, imageIndex = start+slots, imageIndex+1 {
@@ -142,14 +142,14 @@ func writeQRPayloadFrames(payloads [][]byte, dir string, opt qrRenderOptions, pr
 			return fmt.Errorf("write QR mosaic PNG %d: %w", imageIndex, err)
 		}
 		if progress != nil {
-			progress(imageIndex, renderedFrameCount(len(payloads), opt))
+			progress(imageIndex, RenderedFrameCount(len(payloads), opt))
 		}
 	}
 	return nil
 }
 
-// encodeQRPNG 把任意字节存入二维码。gozxing 的写入器接收文本，因此字节会通过 ISO-8859-1 映射，其中每个字节值都映射到相同编号的码点。使用纠错等级 L 以最大化容量。
-func encodeQRPNG(payload []byte, size int, version int) ([]byte, error) {
+// EncodeQRPNG 把任意字节存入二维码。gozxing 的写入器接收文本，因此字节会通过 ISO-8859-1 映射，其中每个字节值都映射到相同编号的码点。使用纠错等级 L 以最大化容量。
+func EncodeQRPNG(payload []byte, size int, version int) ([]byte, error) {
 	img, err := encodeQRGray(payload, size, version)
 	if err != nil {
 		return nil, fmt.Errorf("encode QR image: %w", err)
@@ -208,7 +208,7 @@ func newMosaicCanvas(width int, height int) *image.RGBA {
 }
 
 // drawMosaicGuides 为每个格子描边，让拍摄后的帧具有强矩形对比度，便于解码时重新发现。
-func drawMosaicGuides(dst *image.RGBA, opt qrRenderOptions) {
+func drawMosaicGuides(dst *image.RGBA, opt QRRenderOptions) {
 	for tile := 0; tile < opt.gridSize*opt.gridSize; tile++ {
 		drawTileGuide(dst, opt.tileRect(tile))
 	}
@@ -256,8 +256,8 @@ func drawQRIntoTile(dst *image.RGBA, qr *image.Gray, tile image.Rectangle) error
 	return nil
 }
 
-// decodeQRCodePayloads 加载一张抽取出的图片，并返回分层解码策略找到的每个唯一二维码载荷。
-func decodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
+// DecodeQRCodePayloads 加载一张抽取出的图片，并返回分层解码策略找到的每个唯一二维码载荷。
+func DecodeQRCodePayloads(path string, gridSize int) ([][]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open QR image: %w", err)
@@ -327,7 +327,7 @@ func addMultipleDecode(acc *payloadAccumulator, img image.Image) {
 	}
 }
 
-// decodeQRCodeBytesFromImage 反向执行 encodeQRPNG。有些二维码解码器会直接暴露原始字节段；如果没有，就回退到 Latin-1 文本映射来恢复精确协议字节。
+// decodeQRCodeBytesFromImage 反向执行 EncodeQRPNG。有些二维码解码器会直接暴露原始字节段；如果没有，就回退到 Latin-1 文本映射来恢复精确协议字节。
 func decodeQRCodeBytesFromImage(img image.Image) ([]byte, error) {
 	bmp, err := gozxing.NewBinaryBitmapFromImage(img)
 	if err != nil {
@@ -667,7 +667,7 @@ func bytesToLatin1String(data []byte) string {
 	return string(runes)
 }
 
-// latin1StringToBytes 拒绝 Latin-1 之外的任何 rune，因为这样的值不可能来自 encodeQRPNG 使用的保字节映射。
+// latin1StringToBytes 拒绝 Latin-1 之外的任何 rune，因为这样的值不可能来自 EncodeQRPNG 使用的保字节映射。
 func latin1StringToBytes(text string) ([]byte, error) {
 	out := make([]byte, 0, len(text))
 	for _, r := range text {

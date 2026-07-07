@@ -12,17 +12,17 @@ import (
 	"time"
 )
 
-// videoContext 持有视频辅助函数使用的文件系统、环境和进程钩子。测试可以替换这些钩子，而不牵涉命令或二维码代码。
-type videoContext struct {
+// VideoContext 持有视频辅助函数使用的文件系统、环境和进程钩子。测试可以替换这些钩子，而不牵涉命令或二维码代码。
+type VideoContext struct {
 	getenv     func(string) string
 	lookPath   func(string) (string, error)
 	runCommand func(string, ...string) error
 	now        func() time.Time
 }
 
-// newVideoContext 连接生产环境的文件系统、环境变量、命令查找和进程执行钩子。
-func newVideoContext() videoContext {
-	return videoContext{
+// NewVideoContext 连接生产环境的文件系统、环境变量、命令查找和进程执行钩子。
+func NewVideoContext() VideoContext {
+	return VideoContext{
 		getenv:     os.Getenv,
 		lookPath:   exec.LookPath,
 		runCommand: runCommand,
@@ -30,10 +30,10 @@ func newVideoContext() videoContext {
 	}
 }
 
-// prepareFramesDir 返回用于中间 PNG 帧的目录和清理回调。用户提供的目录不能已包含帧文件，否则旧帧可能混入新的 encode/decode 运行。
+// PrepareFramesDir 返回用于中间 PNG 帧的目录和清理回调。用户提供的目录不能已包含帧文件，否则旧帧可能混入新的 encode/decode 运行。
 // dir 非空时直接作为帧目录使用；pattern 只在 dir 为空时用于生成自动目录，例如 "transfergo-encode-*" 会把 "*" 替换为时间戳。
 // keep 只控制自动创建目录的清理行为；对已存在或用户显式传入的 dir 不生效，因为该分支始终返回空清理函数。
-func (ctx videoContext) prepareFramesDir(dir string, pattern string, keep bool) (string, func(), error) {
+func (ctx VideoContext) PrepareFramesDir(dir string, pattern string, keep bool) (string, func(), error) {
 	if dir != "" {
 		// 显式目录由调用方拥有：这里只确保目录存在且没有旧帧，不会因为 keep=false 而删除它。
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -63,8 +63,8 @@ func (ctx videoContext) prepareFramesDir(dir string, pattern string, keep bool) 
 	return tmp, cleanup, nil
 }
 
-// sortedFramePaths 按顺序返回抽取出的帧。帧名带零填充，所以字典序排序等同于数字排序。
-func (ctx videoContext) sortedFramePaths(dir string) ([]string, error) {
+// SortedFramePaths 按顺序返回抽取出的帧。帧名带零填充，所以字典序排序等同于数字排序。
+func (ctx VideoContext) SortedFramePaths(dir string) ([]string, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "frame_*.png"))
 	if err != nil {
 		return nil, fmt.Errorf("glob frame files: %w", err)
@@ -73,8 +73,8 @@ func (ctx videoContext) sortedFramePaths(dir string) ([]string, error) {
 	return paths, nil
 }
 
-// encodeVideoWithFfmpeg 把 PNG 序列转成 H.264 MP4。输出使用 yuv420p，因为它能在常见播放器和手机上正确预览。
-func (ctx videoContext) encodeVideoWithFfmpeg(ffmpegPath string, framesDir string, output string, fps float64, crf int) error {
+// EncodeVideoWithFfmpeg 把 PNG 序列转成 H.264 MP4。输出使用 yuv420p，因为它能在常见播放器和手机上正确预览。
+func (ctx VideoContext) EncodeVideoWithFfmpeg(ffmpegPath string, framesDir string, output string, fps float64, crf int) error {
 	ffmpegPath, err := ctx.resolveFfmpegPath(ffmpegPath)
 	if err != nil {
 		return fmt.Errorf("resolve ffmpeg path for encode: %w", err)
@@ -98,8 +98,8 @@ func (ctx videoContext) encodeVideoWithFfmpeg(ffmpegPath string, framesDir strin
 	return nil
 }
 
-// extractFramesWithFfmpeg 把输入视频采样为 PNG。高于源帧率的采样可能产生重复帧，二维码收集步骤会有意容忍这种情况。
-func (ctx videoContext) extractFramesWithFfmpeg(ffmpegPath string, input string, framesDir string, sampleFPS float64) error {
+// ExtractFramesWithFfmpeg 把输入视频采样为 PNG。高于源帧率的采样可能产生重复帧，二维码收集步骤会有意容忍这种情况。
+func (ctx VideoContext) ExtractFramesWithFfmpeg(ffmpegPath string, input string, framesDir string, sampleFPS float64) error {
 	ffmpegPath, err := ctx.resolveFfmpegPath(ffmpegPath)
 	if err != nil {
 		return fmt.Errorf("resolve ffmpeg path for extract: %w", err)
@@ -120,7 +120,7 @@ func (ctx videoContext) extractFramesWithFfmpeg(ffmpegPath string, input string,
 }
 
 // resolveFfmpegPath 应用文档中的查找顺序：显式 -ffmpeg、FFMPEG_PATH，然后是通过 PATH 解析的普通 "ffmpeg" 命令。
-func (ctx videoContext) resolveFfmpegPath(explicit string) (string, error) {
+func (ctx VideoContext) resolveFfmpegPath(explicit string) (string, error) {
 	ffmpegPath := "ffmpeg"
 	if explicit != "" {
 		ffmpegPath = explicit

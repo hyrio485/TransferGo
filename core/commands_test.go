@@ -8,9 +8,9 @@ import (
 )
 
 func TestCommandParseEncodeOptions(t *testing.T) {
-	ctx := newCommandContext(&bytes.Buffer{}, &bytes.Buffer{})
+	ctx := NewCommandContext(&bytes.Buffer{}, &bytes.Buffer{})
 
-	opt, err := ctx.parseEncodeOptions([]string{
+	opt, err := ctx.ParseEncodeOptions([]string{
 		"-i", "input.bin",
 		"-o", "out.mp4",
 		"-p", "secret",
@@ -31,19 +31,19 @@ func TestCommandParseEncodeOptions(t *testing.T) {
 }
 
 func TestCommandParseDecodeOptionsRejectsInvalidSampleFPS(t *testing.T) {
-	ctx := newCommandContext(&bytes.Buffer{}, &bytes.Buffer{})
+	ctx := NewCommandContext(&bytes.Buffer{}, &bytes.Buffer{})
 
-	_, err := ctx.parseDecodeOptions([]string{"-i", "video.mp4", "-sample-fps", "0"}, defaultDecodeOptions())
+	_, err := ctx.ParseDecodeOptions([]string{"-i", "video.mp4", "-sample-fps", "0"}, defaultDecodeOptions())
 	if err == nil || !strings.Contains(err.Error(), "-sample-fps must be greater than 0") {
 		t.Fatalf("parse decode error = %v, want sample fps validation", err)
 	}
 }
 
 func TestCommandPrintUsage(t *testing.T) {
-	ctx := newCommandContext(&bytes.Buffer{}, &bytes.Buffer{})
+	ctx := NewCommandContext(&bytes.Buffer{}, &bytes.Buffer{})
 	var out bytes.Buffer
 
-	ctx.printUsage(&out)
+	ctx.PrintUsage(&out)
 
 	if !strings.Contains(out.String(), "transfergo encode") || !strings.Contains(out.String(), "transfergo decode") {
 		t.Fatalf("usage = %q, want encode and decode commands", out.String())
@@ -53,10 +53,10 @@ func TestCommandPrintUsage(t *testing.T) {
 func TestCommandProgressPrinterThrottlesIntermediateOutput(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
-	ctx := newCommandContext(&out, &bytes.Buffer{})
+	ctx := NewCommandContext(&out, &bytes.Buffer{})
 	ctx.now = func() time.Time { return now }
 
-	progress := ctx.newProgressPrinter("work")
+	progress := ctx.NewProgressPrinter("work")
 	progress(1, 3)
 	progress(2, 3)
 	progress(3, 3)

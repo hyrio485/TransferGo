@@ -35,9 +35,9 @@ const (
 
 // appContext 把有状态的源级上下文连接在一起。无状态的二维码辅助函数保留为 qr.go 中的包函数。
 type appContext struct {
-	commands commandContext
-	protocol protocolContext
-	video    videoContext
+	commands CommandContext
+	protocol ProtocolContext
+	video    VideoContext
 }
 
 // collectStats 记录抽取出的图片集合有多嘈杂。decode 会报告这些数字，方便区分缺失载荷帧和图片本身无法读取二维码两种情况。
@@ -58,9 +58,9 @@ type imageDecodeResult struct {
 // newAppContext 为 CLI 构建生产环境连接，使用真实的操作系统流、随机源、二维码处理和 ffmpeg 执行钩子。
 func newAppContext() appContext {
 	return appContext{
-		commands: newCommandContext(os.Stdout, os.Stderr),
-		protocol: newProtocolContext(),
-		video:    newVideoContext(),
+		commands: NewCommandContext(os.Stdout, os.Stderr),
+		protocol: NewProtocolContext(),
+		video:    NewVideoContext(),
 	}
 }
 
@@ -72,7 +72,7 @@ func Run(args []string) error {
 // Run 把解析出的子命令分发到 encode 或 decode 流水线。它是方法，因此测试可以注入假的命令、协议、二维码或视频上下文。
 func (app appContext) Run(args []string) error {
 	if len(args) == 0 {
-		app.commands.printUsage(app.commands.stderr)
+		app.commands.PrintUsage(app.commands.stderr)
 		return errors.New("missing command")
 	}
 
@@ -82,29 +82,29 @@ func (app appContext) Run(args []string) error {
 	case "decode":
 		return app.runDecode(args[1:])
 	case "help", "-h", "--help":
-		app.commands.printUsage(app.commands.stdout)
+		app.commands.PrintUsage(app.commands.stdout)
 		return nil
 	default:
-		app.commands.printUsage(app.commands.stderr)
+		app.commands.PrintUsage(app.commands.stderr)
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
 // runEncode 读取一个输入文件，将其转为协议帧，把每帧渲染成二维码 PNG，并让 ffmpeg 将这些 PNG 组装成视频。
 func (app appContext) runEncode(args []string) error {
-	opt, err := app.commands.parseEncodeOptions(args, defaultEncodeOptions())
+	opt, err := app.commands.ParseEncodeOptions(args, defaultEncodeOptions())
 	if err != nil {
 		return fmt.Errorf("parse encode options: %w", err)
 	}
 
-	renderOpt := qrRenderOptions{
+	renderOpt := QRRenderOptions{
 		qrSize:      opt.qrSize,
 		qrVersion:   opt.qrVersion,
 		videoWidth:  opt.videoWidth,
 		videoHeight: opt.videoHeight,
 		gridSize:    opt.gridSize,
 	}
-	if err := renderOpt.validate(); err != nil {
+	if err := renderOpt.Validate(); err != nil {
 		return fmt.Errorf("validate encode options: %w", err)
 	}
 
@@ -116,42 +116,42 @@ func (app appContext) runEncode(args []string) error {
 
 	chunkSize := opt.chunkSize
 	if chunkSize == 0 {
-		chunkSize, err = app.autoChunkSize(opt.password != "", renderOpt.effectiveQRSize(), opt.qrVersion)
+		chunkSize, err = app.autoChunkSize(opt.password != "", renderOpt.EffectiveQRSize(), opt.qrVersion)
 		if err != nil {
 			return fmt.Errorf("choose automatic chunk size: %w", err)
 		}
 	}
 
 	Fprintln(app.commands.stdout, "building protocol frames...")
-	frames, meta, err := app.protocol.buildTransferFrames(input, filepath.Base(opt.input), opt.password, chunkSize)
+	frames, meta, err := app.protocol.BuildTransferFrames(input, filepath.Base(opt.input), opt.password, chunkSize)
 	if err != nil {
 		return fmt.Errorf("build protocol frames: %w", err)
 	}
 
 	for _, frame := range frames {
-		if _, err := encodeQRPNG(app.protocol.marshalFrame(frame), renderOpt.effectiveQRSize(), opt.qrVersion); err != nil {
+		if _, err := EncodeQRPNG(app.protocol.MarshalFrame(frame), renderOpt.EffectiveQRSize(), opt.qrVersion); err != nil {
 			return fmt.Errorf("frame %d does not fit QR version %d: %w", frame.Seq, opt.qrVersion, err)
 		}
 	}
 
-	framesDir, cleanup, err := app.video.prepareFramesDir(opt.framesDir, "transfergo-encode-*", opt.keep)
+	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.framesDir, "transfergo-encode-*", opt.keep)
 	if err != nil {
 		return fmt.Errorf("prepare encode frames directory: %w", err)
 	}
 	defer cleanup()
 
 	Fprintln(app.commands.stdout, "rendering QR images...")
-	if err := app.writeTransferFrames(frames, framesDir, renderOpt, app.commands.newProgressPrinter("rendered QR images")); err != nil {
+	if err := app.writeTransferFrames(frames, framesDir, renderOpt, app.commands.NewProgressPrinter("rendered QR images")); err != nil {
 		return fmt.Errorf("write QR frames: %w", err)
 	}
 	Fprintln(app.commands.stdout, "encoding video with ffmpeg...")
-	if err := app.video.encodeVideoWithFfmpeg(opt.ffmpeg, framesDir, opt.output, opt.fps, opt.crf); err != nil {
+	if err := app.video.EncodeVideoWithFfmpeg(opt.ffmpeg, framesDir, opt.output, opt.fps, opt.crf); err != nil {
 		return fmt.Errorf("encode video with ffmpeg: %w", err)
 	}
 
 	Fprintf(app.commands.stdout, "encoded %s -> %s\n", opt.input, opt.output)
 	Fprintf(app.commands.stdout, "protocol frames: %d, video frames: %d, data chunks: %d, chunk size: %d bytes, grid: %dx%d, fps: %s, encrypted: %t\n",
-		len(frames), renderedFrameCount(len(frames), renderOpt), meta.ChunkCount, chunkSize, opt.gridSize, opt.gridSize, formatFPS(opt.fps), opt.password != "")
+		len(frames), RenderedFrameCount(len(frames), renderOpt), meta.ChunkCount, chunkSize, opt.gridSize, opt.gridSize, formatFPS(opt.fps), opt.password != "")
 	if opt.keep {
 		Fprintf(app.commands.stdout, "frames kept in %s\n", framesDir)
 	}
@@ -160,34 +160,34 @@ func (app appContext) runEncode(args []string) error {
 
 // runDecode 从视频中抽取 PNG 帧，解码能找到的 TransferGo 二维码载荷，然后校验并重新组装原始文件。
 func (app appContext) runDecode(args []string) error {
-	opt, err := app.commands.parseDecodeOptions(args, defaultDecodeOptions())
+	opt, err := app.commands.ParseDecodeOptions(args, defaultDecodeOptions())
 	if err != nil {
 		return fmt.Errorf("parse decode options: %w", err)
 	}
 
-	framesDir, cleanup, err := app.video.prepareFramesDir(opt.framesDir, "transfergo-decode-*", opt.keep)
+	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.framesDir, "transfergo-decode-*", opt.keep)
 	if err != nil {
 		return fmt.Errorf("prepare decode frames directory: %w", err)
 	}
 	defer cleanup()
 
 	Fprintln(app.commands.stdout, "extracting video frames with ffmpeg...")
-	if err := app.video.extractFramesWithFfmpeg(opt.ffmpeg, opt.input, framesDir, opt.sampleFPS); err != nil {
+	if err := app.video.ExtractFramesWithFfmpeg(opt.ffmpeg, opt.input, framesDir, opt.sampleFPS); err != nil {
 		return fmt.Errorf("extract video frames with ffmpeg: %w", err)
 	}
 
-	paths, err := app.video.sortedFramePaths(framesDir)
+	paths, err := app.video.SortedFramePaths(framesDir)
 	if err != nil {
 		return fmt.Errorf("list extracted frame paths: %w", err)
 	}
 	Fprintln(app.commands.stdout, "decoding QR images...")
-	frames, total, stats, err := app.collectFramesFromImages(paths, opt.gridSize, app.commands.newProgressPrinter("decoded QR images"))
+	frames, total, stats, err := app.collectFramesFromImages(paths, opt.gridSize, app.commands.NewProgressPrinter("decoded QR images"))
 	if err != nil {
 		return fmt.Errorf("collect transfer frames from images: %w", err)
 	}
 
 	Fprintln(app.commands.stdout, "restoring file bytes...")
-	meta, output, err := app.protocol.restoreFromFrames(frames, total, opt.password)
+	meta, output, err := app.protocol.RestoreFromFrames(frames, total, opt.password)
 	if err != nil {
 		return fmt.Errorf("restore file bytes: %w", err)
 	}
@@ -220,8 +220,8 @@ func (app appContext) runDecode(args []string) error {
 }
 
 // defaultEncodeOptions 返回命令行参数覆盖各字段前使用的、适合相机拍摄的 encode 默认值。
-func defaultEncodeOptions() encodeOptions {
-	return encodeOptions{
+func defaultEncodeOptions() EncodeOptions {
+	return EncodeOptions{
 		fps:         defaultFPS,
 		qrSize:      defaultQRSize,
 		qrVersion:   defaultQRVersion,
@@ -233,25 +233,25 @@ func defaultEncodeOptions() encodeOptions {
 }
 
 // defaultDecodeOptions 返回 decode 默认值，相比原始处理速度更偏向从屏幕录像中稳健恢复。
-func defaultDecodeOptions() decodeOptions {
-	return decodeOptions{
+func defaultDecodeOptions() DecodeOptions {
+	return DecodeOptions{
 		sampleFPS: defaultSampleFPS,
 		gridSize:  defaultGridSize,
 	}
 }
 
 // writeTransferFrames 在交给二维码渲染前序列化协议帧。把转换保留在这里，可以让 qr.go 不感知 TransferGo 帧头和加密细节。
-func (app appContext) writeTransferFrames(frames []transferFrame, dir string, opt qrRenderOptions, progress func(done int, total int)) error {
+func (app appContext) writeTransferFrames(frames []TransferFrame, dir string, opt QRRenderOptions, progress func(done int, total int)) error {
 	payloads := make([][]byte, 0, len(frames))
 	for _, frame := range frames {
-		payloads = append(payloads, app.protocol.marshalFrame(frame))
+		payloads = append(payloads, app.protocol.MarshalFrame(frame))
 	}
-	return writeQRPayloadFrames(payloads, dir, opt, progress)
+	return WriteQRPayloadFrames(payloads, dir, opt, progress)
 }
 
 // collectFramesFromImages 解码每张抽取出的 PNG，并只保留有效的 TransferGo 帧。图片解码会并行执行，因为每张抽取帧彼此独立；协议合并留在调用方 goroutine 中，让序列去重和冲突检查保持简单。
-func (app appContext) collectFramesFromImages(paths []string, gridSize int, progress func(done int, total int)) (map[uint32]transferFrame, uint32, collectStats, error) {
-	frames := make(map[uint32]transferFrame)
+func (app appContext) collectFramesFromImages(paths []string, gridSize int, progress func(done int, total int)) (map[uint32]TransferFrame, uint32, collectStats, error) {
+	frames := make(map[uint32]TransferFrame)
 	var total uint32
 	stats := collectStats{images: len(paths)}
 	if len(paths) == 0 {
@@ -265,7 +265,7 @@ func (app appContext) collectFramesFromImages(paths []string, gridSize int, prog
 	for worker := 0; worker < workerCount; worker++ {
 		go func() {
 			for path := range jobs {
-				payloads, err := decodeQRCodePayloads(path, gridSize)
+				payloads, err := DecodeQRCodePayloads(path, gridSize)
 				results <- imageDecodeResult{payloads: payloads, err: err}
 			}
 		}()
@@ -283,7 +283,7 @@ func (app appContext) collectFramesFromImages(paths []string, gridSize int, prog
 			stats.decodeFailures++
 		} else {
 			for _, payload := range result.payloads {
-				frame, err := app.protocol.parseFrame(payload)
+				frame, err := app.protocol.ParseFrame(payload)
 				if err != nil {
 					stats.ignored++
 					continue
@@ -295,7 +295,7 @@ func (app appContext) collectFramesFromImages(paths []string, gridSize int, prog
 					return nil, 0, stats, fmt.Errorf("frame %d reports total %d, expected %d", frame.Seq, frame.Total, total)
 				}
 				if existing, ok := frames[frame.Seq]; ok {
-					if !sameFrame(existing, frame) {
+					if !SameFrame(existing, frame) {
 						return nil, 0, stats, fmt.Errorf("conflicting duplicate frame %d", frame.Seq)
 					}
 					stats.duplicates++
@@ -343,7 +343,7 @@ func (app appContext) canEncodeChunkSize(chunkSize int, encrypted bool, qrSize i
 	if encrypted {
 		bodyLen += nonceSize + 16
 	}
-	frame := transferFrame{
+	frame := TransferFrame{
 		Flags: 0,
 		Kind:  frameKindData,
 		Seq:   1,
@@ -353,6 +353,6 @@ func (app appContext) canEncodeChunkSize(chunkSize int, encrypted bool, qrSize i
 	if encrypted {
 		frame.Flags = frameFlagEncrypted
 	}
-	_, err := encodeQRPNG(app.protocol.marshalFrame(frame), qrSize, qrVersion)
+	_, err := EncodeQRPNG(app.protocol.MarshalFrame(frame), qrSize, qrVersion)
 	return err == nil
 }

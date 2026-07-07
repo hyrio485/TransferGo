@@ -11,20 +11,20 @@ import (
 )
 
 func TestVideoPrepareFramesDirRejectsStaleFrames(t *testing.T) {
-	ctx := newVideoContext()
+	ctx := NewVideoContext()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "frame_000001.png"), []byte("stale"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, _, err := ctx.prepareFramesDir(dir, "unused-*", false)
+	_, _, err := ctx.PrepareFramesDir(dir, "unused-*", false)
 	if err == nil || !strings.Contains(err.Error(), "already contains frame_*.png") {
-		t.Fatalf("prepareFramesDir error = %v, want stale frame rejection", err)
+		t.Fatalf("PrepareFramesDir error = %v, want stale frame rejection", err)
 	}
 }
 
 func TestVideoPrepareFramesDirDefaultsToCurrentDirectory(t *testing.T) {
-	ctx := newVideoContext()
+	ctx := NewVideoContext()
 	ctx.now = func() time.Time {
 		return time.Date(2026, 7, 5, 12, 34, 56, 789, time.UTC)
 	}
@@ -42,7 +42,7 @@ func TestVideoPrepareFramesDirDefaultsToCurrentDirectory(t *testing.T) {
 		}
 	})
 
-	framesDir, cleanup, err := ctx.prepareFramesDir("", "transfergo-encode-*", false)
+	framesDir, cleanup, err := ctx.PrepareFramesDir("", "transfergo-encode-*", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestVideoPrepareFramesDirDefaultsToCurrentDirectory(t *testing.T) {
 }
 
 func TestVideoSortedFramePaths(t *testing.T) {
-	ctx := newVideoContext()
+	ctx := NewVideoContext()
 	dir := t.TempDir()
 	for _, name := range []string{"frame_000003.png", "frame_000001.png", "frame_000002.png"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644); err != nil {
@@ -68,7 +68,7 @@ func TestVideoSortedFramePaths(t *testing.T) {
 		}
 	}
 
-	paths, err := ctx.sortedFramePaths(dir)
+	paths, err := ctx.SortedFramePaths(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestVideoSortedFramePaths(t *testing.T) {
 }
 
 func TestVideoResolveFfmpegPath(t *testing.T) {
-	ctx := newVideoContext()
+	ctx := NewVideoContext()
 	ctx.getenv = func(key string) string {
 		if key == "FFMPEG_PATH" {
 			return "/env/ffmpeg"
@@ -117,7 +117,7 @@ func TestVideoResolveFfmpegPath(t *testing.T) {
 }
 
 func TestVideoEncodeFfmpegCommand(t *testing.T) {
-	ctx := newVideoContext()
+	ctx := NewVideoContext()
 	ctx.lookPath = func(name string) (string, error) {
 		if name != "ffmpeg" {
 			t.Fatalf("lookPath name = %q, want ffmpeg", name)
@@ -132,7 +132,7 @@ func TestVideoEncodeFfmpegCommand(t *testing.T) {
 		return nil
 	}
 
-	err := ctx.encodeVideoWithFfmpeg("", "frames", "out.mp4", 29.97, 23)
+	err := ctx.EncodeVideoWithFfmpeg("", "frames", "out.mp4", 29.97, 23)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,12 +157,12 @@ func TestVideoEncodeFfmpegCommand(t *testing.T) {
 }
 
 func TestVideoEncodeFfmpegReportsMissingCommand(t *testing.T) {
-	ctx := newVideoContext()
+	ctx := NewVideoContext()
 	ctx.lookPath = func(string) (string, error) {
 		return "", errors.New("not found")
 	}
 
-	err := ctx.encodeVideoWithFfmpeg("", "frames", "out.mp4", 1, 24)
+	err := ctx.EncodeVideoWithFfmpeg("", "frames", "out.mp4", 1, 24)
 	if err == nil || !strings.Contains(err.Error(), "ffmpeg not found") {
 		t.Fatalf("encode error = %v, want ffmpeg not found", err)
 	}

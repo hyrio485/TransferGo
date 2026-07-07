@@ -14,7 +14,7 @@ func TestAppPlainRoundTripThroughQRImages(t *testing.T) {
 		input[i] = byte(i)
 	}
 
-	frames, meta, err := app.protocol.buildTransferFrames(input, "payload.bin", "", 100)
+	frames, meta, err := app.protocol.BuildTransferFrames(input, "payload.bin", "", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestAppPlainRoundTripThroughQRImages(t *testing.T) {
 	if err := app.writeTransferFrames(frames, dir, renderOpt, nil); err != nil {
 		t.Fatal(err)
 	}
-	paths, err := app.video.sortedFramePaths(dir)
+	paths, err := app.video.SortedFramePaths(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestAppPlainRoundTripThroughQRImages(t *testing.T) {
 		t.Fatalf("decoded frames = %d, want %d", stats.decoded, len(frames))
 	}
 
-	restoredMeta, output, err := app.protocol.restoreFromFrames(collected, total, "")
+	restoredMeta, output, err := app.protocol.RestoreFromFrames(collected, total, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestAppPlainRoundTripThroughQRImages(t *testing.T) {
 func TestAppCollectFramesSkipsNoisyImages(t *testing.T) {
 	app := newAppContext()
 	input := []byte("small payload")
-	frames, _, err := app.protocol.buildTransferFrames(input, "noise.txt", "", 8)
+	frames, _, err := app.protocol.BuildTransferFrames(input, "noise.txt", "", 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestAppCollectFramesSkipsNoisyImages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	paths, err := app.video.sortedFramePaths(dir)
+	paths, err := app.video.SortedFramePaths(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestAppCollectFramesSkipsNoisyImages(t *testing.T) {
 	if stats.decodeFailures == 0 {
 		t.Fatal("decode failures = 0, want noisy image to be skipped")
 	}
-	_, output, err := app.protocol.restoreFromFrames(collected, total, "")
+	_, output, err := app.protocol.RestoreFromFrames(collected, total, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,8 +118,8 @@ func TestAppRunRejectsUnknownCommand(t *testing.T) {
 	}
 }
 
-func testRenderOptions() qrRenderOptions {
-	return qrRenderOptions{
+func testRenderOptions() QRRenderOptions {
+	return QRRenderOptions{
 		qrSize:      defaultQRSize,
 		qrVersion:   defaultQRVersion,
 		videoWidth:  defaultVideoWidth,

@@ -14,7 +14,7 @@ import (
 func TestQRPayloadRoundTripThroughImage(t *testing.T) {
 	payload := []byte{0, 1, 2, 3, 200, 255}
 
-	pngBytes, err := encodeQRPNG(payload, defaultQRSize, defaultQRVersion)
+	pngBytes, err := EncodeQRPNG(payload, defaultQRSize, defaultQRVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestQRWritePayloadFramesAndDecodePayloads(t *testing.T) {
 	}
 	dir := t.TempDir()
 
-	if err := writeQRPayloadFrames(payloads, dir, testRenderOptions(), nil); err != nil {
+	if err := WriteQRPayloadFrames(payloads, dir, testRenderOptions(), nil); err != nil {
 		t.Fatal(err)
 	}
 	paths, err := filepath.Glob(filepath.Join(dir, "frame_*.png"))
@@ -50,7 +50,7 @@ func TestQRWritePayloadFramesAndDecodePayloads(t *testing.T) {
 		t.Fatalf("rendered images = %d, want 1", len(paths))
 	}
 
-	decoded, err := decodeQRCodePayloads(paths[0], defaultGridSize)
+	decoded, err := DecodeQRCodePayloads(paths[0], defaultGridSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,9 +72,9 @@ func TestQRDecodeBlankImageFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := decodeQRCodePayloads(path, defaultGridSize)
+	_, err := DecodeQRCodePayloads(path, defaultGridSize)
 	if err == nil {
-		t.Fatal("decodeQRCodePayloads error = nil, want blank image failure")
+		t.Fatal("DecodeQRCodePayloads error = nil, want blank image failure")
 	}
 }
 
@@ -82,7 +82,7 @@ func TestQRRenderOptionsValidateSmallQRSize(t *testing.T) {
 	opt := testRenderOptions()
 	opt.qrSize = 10
 
-	err := opt.validate()
+	err := opt.Validate()
 	if err == nil {
 		t.Fatal("validate error = nil, want too-small QR size")
 	}
