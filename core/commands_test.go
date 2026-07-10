@@ -31,6 +31,7 @@ func TestParseEncodeOptionsDefaults(t *testing.T) {
 		ImageHeight: defaultImageHeight,
 		ChunkSize:   defaultChunkSize,
 		CRF:         defaultCRF,
+		Parallel:    true,
 	}
 	if got != want {
 		t.Fatalf("ParseEncodeOptions() = %+v, want %+v", got, want)
@@ -57,6 +58,7 @@ func TestParseEncodeOptionsAliases(t *testing.T) {
 		"-cols", "4",
 		"-chunk-size", "128",
 		"-crf", "20",
+		"-parallel=false",
 		"-replace",
 		"-keep-frames",
 	})
@@ -66,7 +68,7 @@ func TestParseEncodeOptionsAliases(t *testing.T) {
 	if got.Input != "input.bin" || got.Output != "output.mp4" || got.Password != "secret" ||
 		got.Ffmpeg != "/path/to/ffmpeg" || got.FramesDir != "frames" || got.FPS != 4.5 ||
 		got.QRSize != 200 || got.ImageWidth != 1000 || got.ImageHeight != 800 ||
-		got.Rows != 2 || got.Cols != 4 || got.ChunkSize != 128 || got.CRF != 20 ||
+		got.Rows != 2 || got.Cols != 4 || got.ChunkSize != 128 || got.CRF != 20 || got.Parallel ||
 		!got.Replace || !got.Keep {
 		t.Fatalf("unexpected encode options: %+v", got)
 	}
@@ -181,7 +183,7 @@ func TestUsageListsEveryCommandOption(t *testing.T) {
 	encodeOptions := []string{
 		"-i、-in", "-o、-out", "-p、-password", "-ffmpeg", "-frames-dir",
 		"-fps", "-qr-size", "-width", "-height", "-rows", "-cols",
-		"-chunk-size", "-crf", "-replace", "-keep-frames",
+		"-chunk-size", "-crf", "-parallel", "-replace", "-keep-frames",
 	}
 	decodeOptions := []string{
 		"-i、-in", "-o、-out", "-p、-password", "-ffmpeg", "-frames-dir",

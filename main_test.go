@@ -152,6 +152,49 @@ func TestWriteOutputFileReplacePolicy(t *testing.T) {
 	}
 }
 
+// TestWritePayloadImagesParallelModes 验证串行和并行模式生成相同的连续编号二维码图片。
+// 前置条件：准备三个短载荷，并为每种模式使用独立的临时目录。
+// 执行方式：分别关闭和开启 parallel，生成图片后逐张解码。
+// 期望结果：两种模式都生成三张连续编号图片，且每张图片的载荷与输入顺序一致。
+func TestWritePayloadImagesParallelModes(t *testing.T) {
+	payloads := [][]byte{[]byte("first"), []byte("second"), []byte("third")}
+	app := appContext{commands: core.NewCommandContext()}
+
+	for name, parallel := range map[string]bool{"serial": false, "parallel": true} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			opt := core.EncodeOptions{
+				QRSize:      240,
+				Rows:        1,
+				Cols:        1,
+				ImageWidth:  300,
+				ImageHeight: 300,
+				Parallel:    parallel,
+			}
+			if err := app.writePayloadImages(payloads, dir, opt); err != nil {
+				t.Fatal(err)
+			}
+
+			paths, err := sortedFramePaths(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(paths) != len(payloads) {
+				t.Fatalf("generated images = %d, want %d", len(paths), len(payloads))
+			}
+			for index, path := range paths {
+				decoded, err := core.DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, 2048)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(decoded) != 1 || !bytes.Equal(decoded[0], payloads[index]) {
+					t.Fatalf("decoded payloads for image %d = %q, want %q", index+1, decoded, payloads[index])
+				}
+			}
+		})
+	}
+}
+
 // TestRenderedFrameCount 验证二维码网格对应的视频帧数量计算。
 // 前置条件：不需要文件系统或外部命令。
 // 执行方式：覆盖空载荷、整除、存在余数、无效网格和乘法溢出输入。

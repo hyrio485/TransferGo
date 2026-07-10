@@ -101,8 +101,8 @@ func (app appContext) runEncode(args []string) error {
 		}
 	}
 
-	core.LogI("encode configuration: input=%q, output=%q, fps=%g, image=%dx%d, grid=%dx%d, QR size=%d, chunk size=%d bytes, CRF=%d, encrypted=%t, replace=%t\n",
-		opt.Input, opt.Output, opt.FPS, opt.ImageWidth, opt.ImageHeight, opt.Rows, opt.Cols, opt.QRSize, opt.ChunkSize, opt.CRF, opt.Password != "", opt.Replace)
+	core.LogI("encode configuration: input=%q, output=%q, fps=%g, image=%dx%d, grid=%dx%d, QR size=%d, chunk size=%d bytes, CRF=%d, parallel=%t, encrypted=%t, replace=%t\n",
+		opt.Input, opt.Output, opt.FPS, opt.ImageWidth, opt.ImageHeight, opt.Rows, opt.Cols, opt.QRSize, opt.ChunkSize, opt.CRF, opt.Parallel, opt.Password != "", opt.Replace)
 	core.LogI("reading input file: %s\n", opt.Input)
 	input, err := os.ReadFile(opt.Input)
 	if err != nil {
@@ -123,11 +123,12 @@ func (app appContext) runEncode(args []string) error {
 	}
 	defer cleanup()
 
-	core.LogI("rendering QR images...\n")
+	imageCount := renderedFrameCount(len(payloads), opt.Rows, opt.Cols)
+	core.LogI("rendering QR images: parallel=%t, workers=%d\n", opt.Parallel, parallelWorkerCount(opt.Parallel, imageCount))
 	if err := app.writePayloadImages(payloads, framesDir, opt); err != nil {
 		return core.E("write QR images", err)
 	}
-	core.LogI("QR images rendered: %d PNG files in %s\n", renderedFrameCount(len(payloads), opt.Rows, opt.Cols), framesDir)
+	core.LogI("QR images rendered: %d PNG files in %s\n", imageCount, framesDir)
 
 	core.LogI("encoding video with ffmpeg...\n")
 	if err := app.video.EncodeVideo(opt.Ffmpeg, framesDir, opt.Output, opt.FPS, opt.CRF, opt.Replace); err != nil {
@@ -151,6 +152,7 @@ func (app appContext) writePayloadImages(payloads [][]byte, framesDir string, op
 	slots := opt.Rows * opt.Cols
 	total := renderedFrameCount(len(payloads), opt.Rows, opt.Cols)
 	printProgress := app.commands.NewProgressPrinter("rendered QR images")
+	jobs := make([]payloadImageJob, 0, total)
 
 	for start, imageIndex := 0, 1; start < len(payloads); imageIndex++ {
 		// 使用剩余长度判断是否还能装满一帧，避免 start 与 slots 相加时发生整数溢出。
@@ -159,14 +161,57 @@ func (app appContext) writePayloadImages(payloads [][]byte, framesDir string, op
 			end = start + slots
 		}
 
-		path := filepath.Join(framesDir, fmt.Sprintf("frame_%06d.png", imageIndex))
-		if err := core.EncodeMultiByteArraysToSinglePng(payloads[start:end], path, opt.QRSize, opt.Rows, opt.Cols, opt.ImageWidth, opt.ImageHeight); err != nil {
-			return fmt.Errorf("encode QR image %d: %w", imageIndex, err)
-		}
-		printProgress(imageIndex, total)
+		jobs = append(jobs, payloadImageJob{index: imageIndex, payloads: payloads[start:end]})
 		start = end
 	}
-	return nil
+
+	render := func(job payloadImageJob) error {
+		path := filepath.Join(framesDir, fmt.Sprintf("frame_%06d.png", job.index))
+		if err := core.EncodeMultiByteArraysToSinglePng(job.payloads, path, opt.QRSize, opt.Rows, opt.Cols, opt.ImageWidth, opt.ImageHeight); err != nil {
+			return fmt.Errorf("encode QR image %d: %w", job.index, err)
+		}
+		return nil
+	}
+
+	workerCount := parallelWorkerCount(opt.Parallel, len(jobs))
+	if workerCount <= 1 {
+		for done, job := range jobs {
+			if err := render(job); err != nil {
+				return err
+			}
+			printProgress(done+1, total)
+		}
+		return nil
+	}
+
+	jobChannel := make(chan payloadImageJob, len(jobs))
+	results := make(chan error, workerCount)
+	for range workerCount {
+		go func() {
+			for job := range jobChannel {
+				results <- render(job)
+			}
+		}()
+	}
+	for _, job := range jobs {
+		jobChannel <- job
+	}
+	close(jobChannel)
+
+	var firstErr error
+	for done := 1; done <= len(jobs); done++ {
+		if err := <-results; err != nil && firstErr == nil {
+			firstErr = err
+		}
+		printProgress(done, total)
+	}
+	return firstErr
+}
+
+// payloadImageJob 保存一张输出图片对应的帧序号和协议载荷。
+type payloadImageJob struct {
+	index    int
+	payloads [][]byte
 }
 
 // renderedFrameCount 根据载荷数量和网格容量计算需要生成的视频帧数。
@@ -220,7 +265,7 @@ func (app appContext) runDecode(args []string) error {
 	}
 	core.LogI("video frames extracted: %d PNG files in %s\n", len(paths), framesDir)
 
-	workers := decodeWorkerCount(opt.Parallel, len(paths))
+	workers := parallelWorkerCount(opt.Parallel, len(paths))
 	core.LogI("decoding QR images: parallel=%t, workers=%d, max frame size=%d\n", opt.Parallel, workers, opt.MaxFrameSize)
 	payloads, stats, err := collectPayloadsFromImages(paths, opt.MaxFrameSize, opt.Parallel, app.commands.NewProgressPrinter("decoded QR images"))
 	core.LogI("QR decode summary: images=%d, with QR=%d, without QR=%d, unreadable=%d, QR codes=%d, unique=%d, duplicates=%d\n",
@@ -348,7 +393,7 @@ func collectPayloadsFromImages(paths []string, maxFrameSize int, parallel bool, 
 		err      error
 	}
 
-	workerCount := decodeWorkerCount(true, len(paths))
+	workerCount := parallelWorkerCount(true, len(paths))
 	jobs := make(chan decodeJob, len(paths))
 	results := make(chan decodeResult, workerCount)
 	for range workerCount {
@@ -422,8 +467,8 @@ func collectPayloadsSequentially(paths []string, maxFrameSize int, progress func
 	return payloads, stats, nil
 }
 
-// decodeWorkerCount 根据并行开关、逻辑处理器数量和任务数量确定工作协程数。
-func decodeWorkerCount(parallel bool, taskCount int) int {
+// parallelWorkerCount 根据并行开关、逻辑处理器数量和任务数量确定工作协程数。
+func parallelWorkerCount(parallel bool, taskCount int) int {
 	if taskCount <= 0 {
 		return 0
 	}

@@ -42,6 +42,7 @@ encode 参数：
   -cols <数量>             每个视频帧的二维码列数，默认 3
   -chunk-size <字节>       每个数据二维码的明文字节数，默认 240
   -crf <数值>              x264 CRF，取值范围为 0 至 51，默认 24
+  -parallel <布尔值>       是否并行生成 PNG，默认 true
   -replace                 允许替换已有输出视频，默认关闭
   -keep-frames             保留生成的 PNG 帧，默认关闭
 
@@ -85,6 +86,7 @@ type EncodeOptions struct {
 	ImageHeight int
 	ChunkSize   int
 	CRF         int
+	Parallel    bool
 	Replace     bool
 	Keep        bool
 }
@@ -117,6 +119,7 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 		ImageHeight: defaultImageHeight,
 		ChunkSize:   defaultChunkSize,
 		CRF:         defaultCRF,
+		Parallel:    true,
 	}
 	fs.StringVar(&opt.Input, "i", opt.Input, "input file")
 	fs.StringVar(&opt.Input, "in", opt.Input, "input file (alias for -i)")
@@ -134,6 +137,7 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 	fs.IntVar(&opt.Cols, "cols", opt.Cols, "QR grid columns per video frame")
 	fs.IntVar(&opt.ChunkSize, "chunk-size", opt.ChunkSize, "plaintext bytes per data QR")
 	fs.IntVar(&opt.CRF, "crf", opt.CRF, "x264 CRF; 0 is lossless")
+	fs.BoolVar(&opt.Parallel, "parallel", opt.Parallel, "render PNG frames in parallel")
 	fs.BoolVar(&opt.Replace, "replace", opt.Replace, "replace the output video if it exists")
 	fs.BoolVar(&opt.Keep, "keep-frames", opt.Keep, "keep generated PNG frames")
 
