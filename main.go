@@ -1,15 +1,224 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 
-	"hyrio.xyz/transfergo/core"
+	"hyrio.xyz/transfergo/next"
 )
 
+type appContext struct {
+	commands next.CommandContext
+	protocol next.ProtocolContext
+	video    next.VideoContext
+}
+
+func newAppContext() appContext {
+	return appContext{
+		commands: next.NewCommandContext(os.Stdout, os.Stderr),
+		protocol: next.NewProtocolContext(),
+		video:    next.NewVideoContext(),
+	}
+}
+
+// region Encode
+
+func (app appContext) runEncode(args []string) error {
+	opt, err := app.commands.ParseEncodeOptions(args)
+	if err != nil {
+		return next.E("parse encode options", err)
+	}
+
+	next.Fprintf(app.commands.Stdout(), "reading input file: %s\n", opt.Input)
+	input, err := os.ReadFile(opt.Input)
+	if err != nil {
+		return next.E("read input file", err)
+	}
+
+	next.Fprintln(app.commands.Stdout(), "building protocol frames...")
+	payloads, err := app.protocol.EncodeFile(input, filepath.Base(opt.Input), opt.Password, opt.ChunkSize)
+	if err != nil {
+		return next.E("encode file payloads", err)
+	}
+
+	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.FramesDir, "transfergo-encode-", opt.Keep)
+	if err != nil {
+		return next.E("prepare encode frames directory", err)
+	}
+	defer cleanup()
+
+	next.Fprintln(app.commands.Stdout(), "rendering QR images...")
+	if err := app.writePayloadImages(payloads, framesDir, opt); err != nil {
+		return next.E("write QR images", err)
+	}
+
+	next.Fprintln(app.commands.Stdout(), "encoding video with ffmpeg...")
+	if err := app.video.EncodeVideo(opt.Ffmpeg, framesDir, opt.Output, opt.FPS, opt.CRF); err != nil {
+		return next.E("encode video with ffmpeg", err)
+	}
+
+	next.Fprintf(app.commands.Stdout(), "encoded %s -> %s\n", opt.Input, opt.Output)
+	next.Fprintf(app.commands.Stdout(), "protocol frames: %d, video frames: %d, chunk size: %d bytes, grid: %dx%d, fps: %s, encrypted: %t\n",
+		len(payloads), renderedFrameCount(len(payloads), opt.Rows, opt.Cols), opt.ChunkSize, opt.Rows, opt.Cols, fmt.Sprintf("%g", opt.FPS), opt.Password != "")
+	if opt.Keep {
+		next.Fprintf(app.commands.Stdout(), "frames kept in %s\n", framesDir)
+	}
+	return nil
+}
+
+func (app appContext) writePayloadImages(payloads [][]byte, framesDir string, opt next.EncodeOptions) error {
+	slots := opt.Rows * opt.Cols
+	total := renderedFrameCount(len(payloads), opt.Rows, opt.Cols)
+	printProgress := app.commands.NewProgressPrinter("rendered QR images")
+
+	for start, imageIndex := 0, 1; start < len(payloads); start, imageIndex = start+slots, imageIndex+1 {
+		end := start + slots
+		if end > len(payloads) {
+			end = len(payloads)
+		}
+
+		path := filepath.Join(framesDir, fmt.Sprintf("frame_%06d.png", imageIndex))
+		if err := next.EncodeMultiByteArraysToSinglePng(payloads[start:end], path, opt.QRSize, opt.Rows, opt.Cols, opt.ImageWidth, opt.ImageHeight); err != nil {
+			return fmt.Errorf("encode QR image %d: %w", imageIndex, err)
+		}
+		printProgress(imageIndex, total)
+	}
+	return nil
+}
+
+func renderedFrameCount(payloadCount int, rows int, cols int) int {
+	if payloadCount <= 0 {
+		return 0
+	}
+	slots := rows * cols
+	return (payloadCount + slots - 1) / slots
+}
+
+// endregion
+
+// region Decode
+
+func (app appContext) runDecode(args []string) error {
+	opt, err := app.commands.ParseDecodeOptions(args)
+	if err != nil {
+		return next.E("parse decode options", err)
+	}
+
+	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.FramesDir, "transfergo-decode-", opt.Keep)
+	if err != nil {
+		return next.E("prepare decode frames directory", err)
+	}
+	defer cleanup()
+
+	next.Fprintln(app.commands.Stdout(), "extracting video frames with ffmpeg...")
+	if err := app.video.ExtractFrames(opt.Ffmpeg, opt.Input, framesDir, opt.SampleFPS); err != nil {
+		return next.E("extract video frames with ffmpeg", err)
+	}
+
+	paths, err := sortedFramePaths(framesDir)
+	if err != nil {
+		return next.E("list extracted frame paths", err)
+	}
+	if len(paths) == 0 {
+		return errors.New("no extracted image(s) found")
+	}
+
+	next.Fprintln(app.commands.Stdout(), "decoding QR images...")
+	payloads, unreadable, err := collectPayloadsFromImages(paths, app.commands.NewProgressPrinter("decoded QR images"))
+	if err != nil {
+		return next.E("collect QR payloads from images", err)
+	}
+
+	next.Fprintln(app.commands.Stdout(), "restoring file bytes...")
+	manifest, output, err := next.RestoreFile(payloads, opt.Password)
+	if err != nil {
+		return next.E("restore file bytes", err)
+	}
+
+	outputPath := opt.Output
+	if outputPath == "" {
+		outputPath = manifest.FileName()
+		if outputPath == "" {
+			outputPath = "decoded.bin"
+		}
+	}
+	if !opt.Replace {
+		if _, err := os.Stat(outputPath); err == nil {
+			return fmt.Errorf("output file %q already exists; pass -replace to replace it", outputPath)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return next.E("check output file", err)
+		}
+	}
+	if err := os.WriteFile(outputPath, output, 0644); err != nil {
+		return next.E("write output file", err)
+	}
+
+	next.Fprintf(app.commands.Stdout(), "decoded %s -> %s\n", opt.Input, outputPath)
+	next.Fprintf(app.commands.Stdout(), "payloads: %d, extracted images: %d, unreadable images: %d\n", len(payloads), len(paths), unreadable)
+	if opt.Keep {
+		next.Fprintf(app.commands.Stdout(), "frames kept in %s\n", framesDir)
+	}
+	return nil
+}
+
+func collectPayloadsFromImages(paths []string, progress func(done int, total int)) ([][]byte, int, error) {
+	var payloads [][]byte
+	unreadable := 0
+
+	for i, path := range paths {
+		decodedPayloads, err := next.DecodeSinglePngToMultiByteArrays(path)
+		if err != nil {
+			unreadable++
+		} else {
+			payloads = append(payloads, decodedPayloads...)
+		}
+		if progress != nil {
+			progress(i+1, len(paths))
+		}
+	}
+	if len(payloads) == 0 {
+		return nil, unreadable, errors.New("no TransferGo QR payloads decoded")
+	}
+	return payloads, unreadable, nil
+}
+
+func sortedFramePaths(dir string) ([]string, error) {
+	paths, err := filepath.Glob(filepath.Join(dir, "frame_*.png"))
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// endregion
+
+func (app appContext) Run(args []string) error {
+	if len(args) == 0 {
+		app.commands.PrintUsage(app.commands.Stderr())
+		return errors.New("missing command")
+	}
+
+	switch args[0] {
+	case "encode":
+		return app.runEncode(args[1:])
+	case "decode":
+		return app.runDecode(args[1:])
+	case "help", "-h", "--help":
+		app.commands.PrintUsage(app.commands.Stdout())
+		return nil
+	default:
+		app.commands.PrintUsage(app.commands.Stderr())
+		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
 func main() {
-	// 把面向操作系统的行为留在边界：core 包返回错误，main 决定如何打印错误以及使用哪种进程状态。
-	if err := core.Run(os.Args[1:]); err != nil {
-		core.Fprintln(os.Stderr, "error:", err)
+	if err := newAppContext().Run(os.Args[1:]); err != nil {
+		next.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 }

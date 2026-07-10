@@ -97,7 +97,7 @@ FFMPEG_PATH=/Users/hyrio/Workspace/Environments/ffmpeg/ffmpeg ./transfergo encod
   -i files/output.mp4 \
   -o files/restored.bin \
   -p "your-password" \
-  -force
+  -replace
 ```
 
 验证还原结果：
@@ -147,7 +147,7 @@ cmp files/input.bin files/restored.bin
 | `-grid-size` | `3` | 解码时尝试的二维码网格行列数 |
 | `-frames-dir` | 当前目录下的时间戳目录 | 指定抽帧输出目录 |
 | `-keep-frames` | `false` | 保留抽取出的 PNG 帧 |
-| `-force` | `false` | 允许覆盖已有输出文件 |
+| `-replace` | `false` | 允许替换已有输出文件 |
 
 ## 传输流程
 
@@ -247,7 +247,7 @@ go test ./...
   -o files/smoke-restored.bin \
   -p smoke-pass \
   -ffmpeg /path/to/ffmpeg \
-  -force
+  -replace
 
 cmp files/smoke-input.bin files/smoke-restored.bin
 ```
