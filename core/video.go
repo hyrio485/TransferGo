@@ -58,6 +58,7 @@ func (ctx VideoContext) PrepareFramesDir(specified string, tempPrefix string, ke
 	LogI("using temporary frames directory: %s\n", tmp)
 	cleanup := func() {
 		if !keepTemp {
+			LogI("deleting temporary frames directory: %s\n", tmp)
 			if err := os.RemoveAll(tmp); err != nil {
 				LogW("failed to delete temporary frames directory %s: %v\n", tmp, err)
 				return

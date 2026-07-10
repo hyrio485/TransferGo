@@ -67,6 +67,7 @@ func TestPrepareFramesDirLogsAutomaticDirectoryLifecycle(t *testing.T) {
 	}
 	for _, message := range []string{
 		"using temporary frames directory: " + framesDir,
+		"deleting temporary frames directory: " + framesDir,
 		"deleted temporary frames directory: " + framesDir,
 	} {
 		if !strings.Contains(output, message) {

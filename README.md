@@ -478,20 +478,23 @@ cmp files/input.bin files/restored.bin
 
 ```text
 .
+├── .github/workflows/
+│   └── build.yml           # 测试、多平台构建和版本发布工作流
 ├── main.go                 # 命令分发、编码与解码主流程
-├── main_test.go            # 输出路径和文件替换策略测试
+├── main_test.go            # 主流程辅助逻辑、二维码收集和文件写入测试
 ├── core/
 │   ├── commands.go         # 命令参数、帮助和进度日志
 │   ├── commands_test.go    # 参数边界和帮助完整性测试
 │   ├── protocol.go         # 协议帧、清单、加密和文件还原
 │   ├── protocol_test.go    # 协议往返和异常帧测试
 │   ├── qr.go               # 二维码图片编码与解码
-│   ├── qr_test.go          # 二维码尺寸保护测试
+│   ├── qr_test.go          # 二维码往返、异常图片和尺寸保护测试
 │   ├── utils.go            # 日志、错误和字节工具
 │   ├── utils_test.go       # 错误包装、字节拼接和帧率格式测试
 │   ├── video.go            # ffmpeg 调用和帧目录管理
-│   └── video_test.go       # 临时帧目录测试
+│   └── video_test.go       # 帧目录和 ffmpeg 命令构造测试
 ├── go.mod
 ├── go.sum
+├── local-build.sh          # 本地多平台构建脚本
 └── README.md
 ```
