@@ -123,83 +123,83 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 		CRF:         defaultCRF,
 		Parallel:    true,
 	}
-	fs.StringVar(&opt.Input, "i", opt.Input, "input file")
-	fs.StringVar(&opt.Input, "in", opt.Input, "input file (alias for -i)")
-	fs.StringVar(&opt.Output, "o", opt.Output, "output video path")
-	fs.StringVar(&opt.Output, "out", opt.Output, "output video path (alias for -o)")
-	fs.StringVar(&opt.Password, "p", opt.Password, "optional password for AES-GCM encryption")
-	fs.StringVar(&opt.Password, "password", opt.Password, "optional password for AES-GCM encryption (alias for -p)")
-	fs.StringVar(&opt.Ffmpeg, "ffmpeg", opt.Ffmpeg, "ffmpeg executable path; falls back to FFMPEG_PATH, then PATH")
-	fs.StringVar(&opt.FramesDir, "frames-dir", opt.FramesDir, "directory for generated PNG frames")
-	fs.Float64Var(&opt.FPS, "fps", opt.FPS, "video frames per second")
-	fs.IntVar(&opt.QRSize, "qr-size", opt.QRSize, "QR image size inside each grid cell")
-	fs.IntVar(&opt.ImageWidth, "width", opt.ImageWidth, "output image width in pixels")
-	fs.IntVar(&opt.ImageHeight, "height", opt.ImageHeight, "output image height in pixels")
-	fs.IntVar(&opt.Rows, "rows", opt.Rows, "QR grid rows per video frame")
-	fs.IntVar(&opt.Cols, "cols", opt.Cols, "QR grid columns per video frame")
-	fs.IntVar(&opt.ChunkSize, "chunk-size", opt.ChunkSize, "plaintext bytes per data QR")
-	fs.IntVar(&opt.CRF, "crf", opt.CRF, "x264 CRF; 0 is lossless")
-	fs.BoolVar(&opt.Parallel, "parallel", opt.Parallel, "render PNG frames in parallel")
-	fs.BoolVar(&opt.Replace, "replace", opt.Replace, "replace the output video if it exists")
-	fs.BoolVar(&opt.Keep, "keep-frames", opt.Keep, "keep generated PNG frames")
+	fs.StringVar(&opt.Input, "i", opt.Input, "输入文件")
+	fs.StringVar(&opt.Input, "in", opt.Input, "输入文件，等同于 -i")
+	fs.StringVar(&opt.Output, "o", opt.Output, "输出视频路径")
+	fs.StringVar(&opt.Output, "out", opt.Output, "输出视频路径，等同于 -o")
+	fs.StringVar(&opt.Password, "p", opt.Password, "AES-GCM 加密密码")
+	fs.StringVar(&opt.Password, "password", opt.Password, "AES-GCM 加密密码，等同于 -p")
+	fs.StringVar(&opt.Ffmpeg, "ffmpeg", opt.Ffmpeg, "ffmpeg 可执行文件路径")
+	fs.StringVar(&opt.FramesDir, "frames-dir", opt.FramesDir, "生成的 PNG 帧目录")
+	fs.Float64Var(&opt.FPS, "fps", opt.FPS, "视频帧率")
+	fs.IntVar(&opt.QRSize, "qr-size", opt.QRSize, "单个二维码尺寸")
+	fs.IntVar(&opt.ImageWidth, "width", opt.ImageWidth, "输出画面宽度")
+	fs.IntVar(&opt.ImageHeight, "height", opt.ImageHeight, "输出画面高度")
+	fs.IntVar(&opt.Rows, "rows", opt.Rows, "每帧的二维码行数")
+	fs.IntVar(&opt.Cols, "cols", opt.Cols, "每帧的二维码列数")
+	fs.IntVar(&opt.ChunkSize, "chunk-size", opt.ChunkSize, "每个数据二维码的明文字节数")
+	fs.IntVar(&opt.CRF, "crf", opt.CRF, "x264 CRF，0 表示无损")
+	fs.BoolVar(&opt.Parallel, "parallel", opt.Parallel, "是否并行生成 PNG 图片")
+	fs.BoolVar(&opt.Replace, "replace", opt.Replace, "是否覆盖已有输出视频")
+	fs.BoolVar(&opt.Keep, "keep-frames", opt.Keep, "是否保留生成的 PNG 图片")
 
 	if err := fs.Parse(args); err != nil {
-		return EncodeOptions{}, E("parse encode flags failed", err)
+		return EncodeOptions{}, E("编码参数格式不正确", err)
 	}
 	if fs.NArg() > 1 {
-		return EncodeOptions{}, errors.New("encode accepts only one positional input file")
+		return EncodeOptions{}, errors.New("encode 命令只能指定一个输入文件")
 	}
 	if fs.NArg() == 1 {
 		if opt.Input != "" {
-			return EncodeOptions{}, errors.New("encode input must be specified either as a positional argument or with -i, not both")
+			return EncodeOptions{}, errors.New("输入文件不能同时使用位置参数和 -i 参数指定")
 		}
 		opt.Input = fs.Arg(0)
 	}
 	if opt.QRSize <= 0 {
-		return EncodeOptions{}, errors.New("-qr-size must be greater than 0")
+		return EncodeOptions{}, errors.New("-qr-size 必须大于 0")
 	}
 	if opt.Rows <= 0 {
-		return EncodeOptions{}, errors.New("-rows must be greater than 0")
+		return EncodeOptions{}, errors.New("-rows 必须大于 0")
 	}
 	if opt.Cols <= 0 {
-		return EncodeOptions{}, errors.New("-cols must be greater than 0")
+		return EncodeOptions{}, errors.New("-cols 必须大于 0")
 	}
 	if opt.ImageWidth <= 0 {
-		return EncodeOptions{}, errors.New("-width must be greater than 0")
+		return EncodeOptions{}, errors.New("-width 必须大于 0")
 	}
 	if opt.ImageHeight <= 0 {
-		return EncodeOptions{}, errors.New("-height must be greater than 0")
+		return EncodeOptions{}, errors.New("-height 必须大于 0")
 	}
 	if opt.ImageWidth%2 != 0 {
-		return EncodeOptions{}, errors.New("-width must be an even number for yuv420p video")
+		return EncodeOptions{}, errors.New("使用 yuv420p 视频格式时，-width 必须是偶数")
 	}
 	if opt.ImageHeight%2 != 0 {
-		return EncodeOptions{}, errors.New("-height must be an even number for yuv420p video")
+		return EncodeOptions{}, errors.New("使用 yuv420p 视频格式时，-height 必须是偶数")
 	}
 	if !qrGridDimensionFits(opt.ImageHeight, opt.Rows, opt.QRSize) {
-		return EncodeOptions{}, errors.New("-rows and -qr-size do not fit inside -height")
+		return EncodeOptions{}, errors.New("-rows 与 -qr-size 的组合超出 -height 指定的画面高度")
 	}
 	if !qrGridDimensionFits(opt.ImageWidth, opt.Cols, opt.QRSize) {
-		return EncodeOptions{}, errors.New("-cols and -qr-size do not fit inside -width")
+		return EncodeOptions{}, errors.New("-cols 与 -qr-size 的组合超出 -width 指定的画面宽度")
 	}
 	maxInt := int(^uint(0) >> 1)
 	if opt.Rows > maxInt/opt.Cols {
-		return EncodeOptions{}, errors.New("-rows and -cols produce too many grid slots")
+		return EncodeOptions{}, errors.New("-rows 与 -cols 的乘积过大，无法创建二维码网格")
 	}
 	if opt.Input == "" {
-		return EncodeOptions{}, errors.New("encode requires an input file")
+		return EncodeOptions{}, errors.New("encode 命令缺少输入文件")
 	}
 	if opt.Output == "" {
 		opt.Output = opt.Input + ".mp4"
 	}
 	if opt.FPS <= 0 || math.IsNaN(opt.FPS) || math.IsInf(opt.FPS, 0) {
-		return EncodeOptions{}, errors.New("-fps must be greater than 0")
+		return EncodeOptions{}, errors.New("-fps 必须是大于 0 的有效数字")
 	}
 	if opt.ChunkSize <= 0 {
-		return EncodeOptions{}, errors.New("-chunk-size must be greater than 0")
+		return EncodeOptions{}, errors.New("-chunk-size 必须大于 0")
 	}
 	if opt.CRF < 0 || opt.CRF > 51 {
-		return EncodeOptions{}, errors.New("-crf must be between 0 and 51")
+		return EncodeOptions{}, errors.New("-crf 必须在 0 至 51 之间")
 	}
 	return opt, nil
 }
@@ -214,40 +214,40 @@ func (ctx CommandContext) ParseDecodeOptions(args []string) (DecodeOptions, erro
 		MaxFrameSize: defaultDecodeFrameSize,
 		Parallel:     true,
 	}
-	fs.StringVar(&opt.Input, "i", opt.Input, "input video path")
-	fs.StringVar(&opt.Input, "in", opt.Input, "input video path (alias for -i)")
-	fs.StringVar(&opt.Output, "o", opt.Output, "output file path; defaults to the original file name from the manifest")
-	fs.StringVar(&opt.Output, "out", opt.Output, "output file path (alias for -o)")
-	fs.StringVar(&opt.Password, "p", opt.Password, "password for encrypted videos")
-	fs.StringVar(&opt.Password, "password", opt.Password, "password for encrypted videos (alias for -p)")
-	fs.StringVar(&opt.Ffmpeg, "ffmpeg", opt.Ffmpeg, "ffmpeg executable path; falls back to FFMPEG_PATH, then PATH")
-	fs.StringVar(&opt.FramesDir, "frames-dir", opt.FramesDir, "directory for extracted PNG frames")
-	fs.Float64Var(&opt.SampleFPS, "sample-fps", opt.SampleFPS, "QR sampling rate while decoding")
-	fs.IntVar(&opt.MaxFrameSize, "max-frame-size", opt.MaxFrameSize, "maximum decoded frame edge in pixels")
-	fs.BoolVar(&opt.Parallel, "parallel", opt.Parallel, "decode PNG frames in parallel")
-	fs.BoolVar(&opt.Replace, "replace", opt.Replace, "replace the output file if it exists")
-	fs.BoolVar(&opt.Keep, "keep-frames", opt.Keep, "keep extracted PNG frames")
+	fs.StringVar(&opt.Input, "i", opt.Input, "输入视频路径")
+	fs.StringVar(&opt.Input, "in", opt.Input, "输入视频路径，等同于 -i")
+	fs.StringVar(&opt.Output, "o", opt.Output, "输出文件路径")
+	fs.StringVar(&opt.Output, "out", opt.Output, "输出文件路径，等同于 -o")
+	fs.StringVar(&opt.Password, "p", opt.Password, "加密视频的解码密码")
+	fs.StringVar(&opt.Password, "password", opt.Password, "加密视频的解码密码，等同于 -p")
+	fs.StringVar(&opt.Ffmpeg, "ffmpeg", opt.Ffmpeg, "ffmpeg 可执行文件路径")
+	fs.StringVar(&opt.FramesDir, "frames-dir", opt.FramesDir, "抽取的 PNG 帧目录")
+	fs.Float64Var(&opt.SampleFPS, "sample-fps", opt.SampleFPS, "解码时每秒抽取的图片数")
+	fs.IntVar(&opt.MaxFrameSize, "max-frame-size", opt.MaxFrameSize, "解码图片最长边限制")
+	fs.BoolVar(&opt.Parallel, "parallel", opt.Parallel, "是否并行识别 PNG 图片")
+	fs.BoolVar(&opt.Replace, "replace", opt.Replace, "是否覆盖已有输出文件")
+	fs.BoolVar(&opt.Keep, "keep-frames", opt.Keep, "是否保留抽取的 PNG 图片")
 
 	if err := fs.Parse(args); err != nil {
-		return DecodeOptions{}, E("parse decode flags", err)
+		return DecodeOptions{}, E("解码参数格式不正确", err)
 	}
 	if fs.NArg() > 1 {
-		return DecodeOptions{}, errors.New("decode accepts only one positional input video")
+		return DecodeOptions{}, errors.New("decode 命令只能指定一个输入视频")
 	}
 	if fs.NArg() == 1 {
 		if opt.Input != "" {
-			return DecodeOptions{}, errors.New("decode input must be specified either as a positional argument or with -i, not both")
+			return DecodeOptions{}, errors.New("输入视频不能同时使用位置参数和 -i 参数指定")
 		}
 		opt.Input = fs.Arg(0)
 	}
 	if opt.Input == "" {
-		return DecodeOptions{}, errors.New("decode requires an input video")
+		return DecodeOptions{}, errors.New("decode 命令缺少输入视频")
 	}
 	if opt.SampleFPS <= 0 || math.IsNaN(opt.SampleFPS) || math.IsInf(opt.SampleFPS, 0) {
-		return DecodeOptions{}, errors.New("-sample-fps must be greater than 0")
+		return DecodeOptions{}, errors.New("-sample-fps 必须是大于 0 的有效数字")
 	}
 	if opt.MaxFrameSize <= 0 || opt.MaxFrameSize > maxImageDimension {
-		return DecodeOptions{}, fmt.Errorf("-max-frame-size must be between 1 and %d", maxImageDimension)
+		return DecodeOptions{}, fmt.Errorf("-max-frame-size 必须在 1 至 %d 之间", maxImageDimension)
 	}
 	return opt, nil
 }
@@ -270,6 +270,6 @@ func (ctx CommandContext) NewProgressPrinter(label string) func(done int, total 
 			return
 		}
 		last = now
-		LogI("%s: %d/%d\n", label, done, total)
+		LogI("%s：%d／%d\n", label, done, total)
 	}
 }

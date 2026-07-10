@@ -50,7 +50,7 @@ func TestConcatByteArrays(t *testing.T) {
 func TestErrorWrapperPreservesCause(t *testing.T) {
 	cause := errors.New("cause")
 	err := E("step", cause)
-	if err.Error() != "step: cause" || !errors.Is(err, cause) {
+	if err.Error() != "step：cause" || !errors.Is(err, cause) {
 		t.Fatalf("E() = %v", err)
 	}
 }

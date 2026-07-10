@@ -14,9 +14,9 @@ const (
 	colorRed    = "\033[31m"
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
-	prefixError = "[ERROR] "
-	prefixInfo  = " [INFO] "
-	prefixWarn  = " [WARN] "
+	prefixError = "【错误】"
+	prefixInfo  = "【信息】"
+	prefixWarn  = "【警告】"
 )
 
 // log 为格式化内容附加级别前缀和终端颜色，并忽略日志输出失败。
@@ -50,7 +50,7 @@ func CloseFile(file *os.File) {
 
 // E 为底层错误补充当前处理步骤，同时保留错误链。
 func E(proc string, err error) error {
-	return fmt.Errorf("%s: %w", proc, err)
+	return fmt.Errorf("%s：%w", proc, err)
 }
 
 // ConcatByteArrays 预分配所需容量，并按参数顺序拼接多个字节切片。

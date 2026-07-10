@@ -33,37 +33,37 @@ func (ctx VideoContext) PrepareFramesDir(specified string, tempPrefix string, ke
 	if specified != "" {
 		// 显式目录由调用方拥有：这里只确保目录存在且没有旧帧，不会因为 keep=false 而删除它。
 		if err := os.MkdirAll(specified, 0755); err != nil {
-			return "", nil, E("create frames directory", err)
+			return "", nil, E("创建帧目录失败", err)
 		}
 		existing, err := filepath.Glob(filepath.Join(specified, "frame_*.png"))
 		if err != nil {
-			return "", nil, E("check existing frame files", err)
+			return "", nil, E("检查帧目录中的已有图片失败", err)
 		}
 		if len(existing) > 0 {
-			return "", nil, fmt.Errorf("%s already contains frame_*.png files; choose an empty frames directory", specified)
+			return "", nil, fmt.Errorf("帧目录 %s 中已存在 frame_*.png 图片，请选择一个不含旧帧图片的目录", specified)
 		}
-		LogI("using specified frames directory: %s\n", specified)
+		LogI("使用指定的帧目录：%s\n", specified)
 		return specified, func() {}, nil
 	}
 
 	// 自动目录由本次运行拥有，随机后缀可以避免并发任务发生目录冲突。
 	workingDir, err := os.Getwd()
 	if err != nil {
-		return "", nil, E("get current working directory", err)
+		return "", nil, E("获取当前工作目录失败", err)
 	}
 	tmp, err := os.MkdirTemp(workingDir, tempPrefix)
 	if err != nil {
-		return "", nil, E("create temporary frames directory", err)
+		return "", nil, E("创建临时帧目录失败", err)
 	}
-	LogI("using temporary frames directory: %s\n", tmp)
+	LogI("使用本次任务的临时帧目录：%s\n", tmp)
 	cleanup := func() {
 		if !keepTemp {
-			LogI("deleting temporary frames directory: %s\n", tmp)
+			LogI("正在清理临时帧目录：%s\n", tmp)
 			if err := os.RemoveAll(tmp); err != nil {
-				LogW("failed to delete temporary frames directory %s: %v\n", tmp, err)
+				LogW("临时帧目录清理失败：目录=%s，原因=%v\n", tmp, err)
 				return
 			}
-			LogI("deleted temporary frames directory: %s\n", tmp)
+			LogI("临时帧目录清理完成：%s\n", tmp)
 		}
 	}
 	return tmp, cleanup, nil
@@ -89,7 +89,7 @@ func (ctx VideoContext) EncodeVideo(ffmpegPath string, framesDir string, output 
 		"-pix_fmt", "yuv420p",
 		output,
 	); err != nil {
-		return E("run ffmpeg encode command", err)
+		return E("执行 ffmpeg 视频编码命令失败", err)
 	}
 	return nil
 }
@@ -105,7 +105,7 @@ func (ctx VideoContext) ExtractFrames(ffmpegPath string, input string, framesDir
 		"-vf", "fps="+formatFPS(sampleFPS),
 		filepath.Join(framesDir, "frame_%06d.png"),
 	); err != nil {
-		return E("run ffmpeg extract command", err)
+		return E("执行 ffmpeg 视频抽帧命令失败", err)
 	}
 	return nil
 }
@@ -121,10 +121,10 @@ func (ctx VideoContext) runWithFfmpeg(ffmpegPath string, args ...string) error {
 		ffmpeg = env
 	}
 	if _, err := ctx.lookPath(ffmpeg); err != nil && !strings.Contains(ffmpeg, string(os.PathSeparator)) {
-		return fmt.Errorf("ffmpeg not found; pass -ffmpeg <path>, set FFMPEG_PATH, or make ffmpeg available in PATH")
+		return fmt.Errorf("未找到 ffmpeg，请使用 -ffmpeg <路径> 指定可执行文件、设置 FFMPEG_PATH 环境变量，或把 ffmpeg 加入 PATH")
 	}
 	if err := ctx.runCommand(ffmpeg, args...); err != nil {
-		return E("run ffmpeg command", err)
+		return E("执行 ffmpeg 命令失败", err)
 	}
 	return nil
 }
@@ -136,9 +136,9 @@ func runCommand(name string, args ...string) error {
 	if err != nil {
 		msg := strings.TrimSpace(string(output))
 		if msg == "" {
-			return fmt.Errorf("run command %s: %w", name, err)
+			return fmt.Errorf("执行命令 %s 失败：%w", name, err)
 		}
-		return fmt.Errorf("run command %s: %w: %s", name, err, msg)
+		return fmt.Errorf("执行命令 %s 失败：%w；命令输出：%s", name, err, msg)
 	}
 	return nil
 }

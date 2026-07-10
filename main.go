@@ -40,7 +40,7 @@ func (app appContext) Run(args []string) error {
 		app.commands.PrintUsage()
 		return nil
 	default:
-		return withUsage(fmt.Errorf("unknown command %q", args[0]))
+		return withUsage(fmt.Errorf("无法识别命令 %q，请使用 encode、decode 或 help", args[0]))
 	}
 }
 
@@ -91,58 +91,58 @@ func newAppContext() appContext {
 func (app appContext) runEncode(args []string) error {
 	opt, err := app.commands.ParseEncodeOptions(args)
 	if err != nil {
-		return withUsage(core.E("parse encode options", err))
+		return withUsage(core.E("解析编码参数失败", err))
 	}
 	if !opt.Replace {
 		if _, err := os.Lstat(opt.Output); err == nil {
-			return fmt.Errorf("output file %q already exists; pass -replace to replace it", opt.Output)
+			return fmt.Errorf("输出文件 %q 已存在，如需覆盖请添加 -replace 参数", opt.Output)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return core.E("check output file", err)
+			return core.E("检查输出文件失败", err)
 		}
 	}
 
-	core.LogI("encode configuration: input=%q, output=%q, fps=%g, image=%dx%d, grid=%dx%d, QR size=%d, chunk size=%d bytes, CRF=%d, parallel=%t, encrypted=%t, replace=%t\n",
-		opt.Input, opt.Output, opt.FPS, opt.ImageWidth, opt.ImageHeight, opt.Rows, opt.Cols, opt.QRSize, opt.ChunkSize, opt.CRF, opt.Parallel, opt.Password != "", opt.Replace)
-	core.LogI("reading input file: %s\n", opt.Input)
+	core.LogI("编码配置：输入文件=%q，输出视频=%q，帧率=%g，画面尺寸=%d×%d，二维码网格=%d×%d，单个二维码尺寸=%d 像素，单块数据=%d 字节，CRF=%d，并行处理=%s，加密=%s，覆盖已有文件=%s\n",
+		opt.Input, opt.Output, opt.FPS, opt.ImageWidth, opt.ImageHeight, opt.Rows, opt.Cols, opt.QRSize, opt.ChunkSize, opt.CRF, boolText(opt.Parallel), boolText(opt.Password != ""), boolText(opt.Replace))
+	core.LogI("正在读取输入文件：%s\n", opt.Input)
 	input, err := os.ReadFile(opt.Input)
 	if err != nil {
-		return core.E("read input file", err)
+		return core.E("读取输入文件失败", err)
 	}
-	core.LogI("input file loaded: %d bytes\n", len(input))
+	core.LogI("输入文件读取完成：共 %d 字节\n", len(input))
 
-	core.LogI("building protocol frames...\n")
+	core.LogI("正在把文件拆分为传输数据帧……\n")
 	payloads, err := app.protocol.EncodeFile(input, filepath.Base(opt.Input), opt.Password, opt.ChunkSize)
 	if err != nil {
-		return core.E("encode file payloads", err)
+		return core.E("生成传输数据帧失败", err)
 	}
-	core.LogI("protocol prepared: %d QR codes, %d video frames\n", len(payloads), renderedFrameCount(len(payloads), opt.Rows, opt.Cols))
+	core.LogI("传输数据帧生成完成：需要 %d 个二维码，预计生成 %d 帧视频画面\n", len(payloads), renderedFrameCount(len(payloads), opt.Rows, opt.Cols))
 
 	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.FramesDir, "transfergo-encode-", opt.Keep)
 	if err != nil {
-		return core.E("prepare encode frames directory", err)
+		return core.E("准备编码帧目录失败", err)
 	}
 	defer cleanup()
 
 	imageCount := renderedFrameCount(len(payloads), opt.Rows, opt.Cols)
-	core.LogI("rendering QR images: parallel=%t, workers=%d\n", opt.Parallel, parallelWorkerCount(opt.Parallel, imageCount))
+	core.LogI("正在生成二维码图片：并行处理=%s，工作协程数=%d\n", boolText(opt.Parallel), parallelWorkerCount(opt.Parallel, imageCount))
 	if err := app.writePayloadImages(payloads, framesDir, opt); err != nil {
-		return core.E("write QR images", err)
+		return core.E("生成二维码图片失败", err)
 	}
-	core.LogI("QR images rendered: %d PNG files in %s\n", imageCount, framesDir)
+	core.LogI("二维码图片生成完成：共 %d 张 PNG 图片，目录为 %s\n", imageCount, framesDir)
 
-	core.LogI("encoding video with ffmpeg...\n")
+	core.LogI("正在使用 ffmpeg 生成视频……\n")
 	if err := app.video.EncodeVideo(opt.Ffmpeg, framesDir, opt.Output, opt.FPS, opt.CRF, opt.Replace); err != nil {
-		return core.E("encode video with ffmpeg", err)
+		return core.E("使用 ffmpeg 生成视频失败", err)
 	}
 	if info, statErr := os.Stat(opt.Output); statErr == nil {
-		core.LogI("video encoded: %d bytes\n", info.Size())
+		core.LogI("视频生成完成：文件大小为 %d 字节\n", info.Size())
 	}
 
-	core.LogI("encoded %s -> %s\n", opt.Input, opt.Output)
-	core.LogI("protocol frames: %d, video frames: %d, chunk size: %d bytes, grid: %dx%d, fps: %s, encrypted: %t\n",
-		len(payloads), renderedFrameCount(len(payloads), opt.Rows, opt.Cols), opt.ChunkSize, opt.Rows, opt.Cols, fmt.Sprintf("%g", opt.FPS), opt.Password != "")
+	core.LogI("编码成功：%s → %s\n", opt.Input, opt.Output)
+	core.LogI("编码汇总：二维码总数=%d，视频画面数=%d，单块数据=%d 字节，二维码网格=%d×%d，帧率=%s，加密=%s\n",
+		len(payloads), renderedFrameCount(len(payloads), opt.Rows, opt.Cols), opt.ChunkSize, opt.Rows, opt.Cols, fmt.Sprintf("%g", opt.FPS), boolText(opt.Password != ""))
 	if opt.Keep {
-		core.LogI("frames kept in %s\n", framesDir)
+		core.LogI("已保留编码过程中生成的 PNG 图片：%s\n", framesDir)
 	}
 	return nil
 }
@@ -151,7 +151,7 @@ func (app appContext) runEncode(args []string) error {
 func (app appContext) writePayloadImages(payloads [][]byte, framesDir string, opt core.EncodeOptions) error {
 	slots := opt.Rows * opt.Cols
 	total := renderedFrameCount(len(payloads), opt.Rows, opt.Cols)
-	printProgress := app.commands.NewProgressPrinter("rendered QR images")
+	printProgress := app.commands.NewProgressPrinter("二维码图片生成进度")
 	jobs := make([]payloadImageJob, 0, total)
 
 	for start, imageIndex := 0, 1; start < len(payloads); imageIndex++ {
@@ -168,7 +168,7 @@ func (app appContext) writePayloadImages(payloads [][]byte, framesDir string, op
 	render := func(job payloadImageJob) error {
 		path := filepath.Join(framesDir, fmt.Sprintf("frame_%06d.png", job.index))
 		if err := core.EncodeMultiByteArraysToSinglePng(job.payloads, path, opt.QRSize, opt.Rows, opt.Cols, opt.ImageWidth, opt.ImageHeight); err != nil {
-			return fmt.Errorf("encode QR image %d: %w", job.index, err)
+			return fmt.Errorf("生成第 %d 张二维码图片失败：%w", job.index, err)
 		}
 		return nil
 	}
@@ -236,65 +236,65 @@ func renderedFrameCount(payloadCount int, rows int, cols int) int {
 func (app appContext) runDecode(args []string) error {
 	opt, err := app.commands.ParseDecodeOptions(args)
 	if err != nil {
-		return withUsage(core.E("parse decode options", err))
+		return withUsage(core.E("解析解码参数失败", err))
 	}
 	requestedOutput := opt.Output
 	if requestedOutput == "" {
-		requestedOutput = "<manifest file name>"
+		requestedOutput = "<使用视频清单中的原文件名>"
 	}
-	core.LogI("decode configuration: input=%q, output=%q, sample fps=%g, max frame size=%d, parallel=%t, password supplied=%t, replace=%t\n",
-		opt.Input, requestedOutput, opt.SampleFPS, opt.MaxFrameSize, opt.Parallel, opt.Password != "", opt.Replace)
+	core.LogI("解码配置：输入视频=%q，输出文件=%q，抽帧率=%g，图片最长边限制=%d 像素，并行处理=%s，已提供密码=%s，覆盖已有文件=%s\n",
+		opt.Input, requestedOutput, opt.SampleFPS, opt.MaxFrameSize, boolText(opt.Parallel), boolText(opt.Password != ""), boolText(opt.Replace))
 
 	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.FramesDir, "transfergo-decode-", opt.Keep)
 	if err != nil {
-		return core.E("prepare decode frames directory", err)
+		return core.E("准备解码帧目录失败", err)
 	}
 	defer cleanup()
 
-	core.LogI("extracting video frames with ffmpeg...\n")
+	core.LogI("正在使用 ffmpeg 从视频中抽取图片……\n")
 	if err := app.video.ExtractFrames(opt.Ffmpeg, opt.Input, framesDir, opt.SampleFPS); err != nil {
-		return core.E("extract video frames with ffmpeg", err)
+		return core.E("使用 ffmpeg 抽取视频图片失败", err)
 	}
 
 	paths, err := sortedFramePaths(framesDir)
 	if err != nil {
-		return core.E("list extracted frame paths", err)
+		return core.E("读取抽帧图片列表失败", err)
 	}
 	if len(paths) == 0 {
-		return errors.New("no extracted image(s) found")
+		return errors.New("没有找到 ffmpeg 抽取的 PNG 图片")
 	}
-	core.LogI("video frames extracted: %d PNG files in %s\n", len(paths), framesDir)
+	core.LogI("视频抽帧完成：共生成 %d 张 PNG 图片，目录为 %s\n", len(paths), framesDir)
 
 	workers := parallelWorkerCount(opt.Parallel, len(paths))
-	core.LogI("decoding QR images: parallel=%t, workers=%d, max frame size=%d\n", opt.Parallel, workers, opt.MaxFrameSize)
-	payloads, stats, err := collectPayloadsFromImages(paths, opt.MaxFrameSize, opt.Parallel, app.commands.NewProgressPrinter("decoded QR images"))
-	core.LogI("QR decode summary: images=%d, with QR=%d, without QR=%d, unreadable=%d, QR codes=%d, unique=%d, duplicates=%d\n",
+	core.LogI("正在识别图片中的二维码：并行处理=%s，工作协程数=%d，图片最长边限制=%d 像素\n", boolText(opt.Parallel), workers, opt.MaxFrameSize)
+	payloads, stats, err := collectPayloadsFromImages(paths, opt.MaxFrameSize, opt.Parallel, app.commands.NewProgressPrinter("二维码图片识别进度"))
+	core.LogI("二维码识别汇总：抽帧图片=%d 张，含二维码图片=%d 张，未发现二维码图片=%d 张，无法读取图片=%d 张，识别到的二维码载荷=%d 个，去重后载荷=%d 个，重复载荷=%d 个\n",
 		stats.TotalImages, stats.ImagesWithPayloads, stats.EmptyImages, stats.UnreadableImages, stats.PayloadCount, stats.UniquePayloadCount, stats.DuplicatePayloadCount)
 	if err != nil {
-		return core.E("collect QR payloads from images", err)
+		return core.E("汇总二维码载荷失败", err)
 	}
 
-	core.LogI("restoring file bytes...\n")
+	core.LogI("正在根据二维码载荷还原文件内容……\n")
 	manifest, output, err := core.RestoreFile(payloads, opt.Password)
 	if err != nil {
-		return core.E("restore file bytes", err)
+		return core.E("还原文件内容失败", err)
 	}
 	digest := sha256.Sum256(output)
-	core.LogI("file restored and verified: manifest name=%q, size=%d bytes, SHA-256=%x\n", manifest.FileName(), len(output), digest)
+	core.LogI("文件内容还原并校验通过：原文件名=%q，文件大小=%d 字节，SHA-256=%x\n", manifest.FileName(), len(output), digest)
 
 	outputPath, err := decodedOutputPath(opt.Output, manifest.FileName())
 	if err != nil {
-		return core.E("choose output file", err)
+		return core.E("确定输出文件路径失败", err)
 	}
 	if err := writeOutputFile(outputPath, output, opt.Replace); err != nil {
-		return core.E("write output file", err)
+		return core.E("写入输出文件失败", err)
 	}
 
-	core.LogI("decoded %s -> %s\n", opt.Input, outputPath)
-	core.LogI("decode completed: extracted images=%d, QR codes=%d, unique QR codes=%d, restored bytes=%d\n",
+	core.LogI("解码成功：%s → %s\n", opt.Input, outputPath)
+	core.LogI("解码汇总：抽帧图片=%d 张，识别到的二维码载荷=%d 个，去重后载荷=%d 个，还原文件大小=%d 字节\n",
 		stats.TotalImages, stats.PayloadCount, stats.UniquePayloadCount, len(output))
 	if opt.Keep {
-		core.LogI("frames kept in %s\n", framesDir)
+		core.LogI("已保留解码过程中抽取的 PNG 图片：%s\n", framesDir)
 	}
 	return nil
 }
@@ -309,7 +309,7 @@ func decodedOutputPath(requested string, manifestName string) (string, error) {
 		return "decoded.bin", nil
 	}
 	if manifestName == "." || manifestName == ".." || filepath.IsAbs(manifestName) || strings.ContainsAny(manifestName, `/\`) || filepath.Base(manifestName) != manifestName {
-		return "", fmt.Errorf("unsafe file name %q in manifest; pass -o to choose an output path", manifestName)
+		return "", fmt.Errorf("视频清单中的原文件名 %q 不安全，请使用 -o 参数指定输出路径", manifestName)
 	}
 	return manifestName, nil
 }
@@ -321,7 +321,7 @@ func writeOutputFile(path string, data []byte, replace bool) error {
 		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 		if err != nil {
 			if errors.Is(err, os.ErrExist) {
-				return fmt.Errorf("output file %q already exists; pass -replace to replace it", path)
+				return fmt.Errorf("输出文件 %q 已存在，如需覆盖请添加 -replace 参数", path)
 			}
 			return err
 		}
@@ -434,7 +434,7 @@ func collectPayloadsFromImages(paths []string, maxFrameSize int, parallel bool, 
 	}
 	completePayloadStats(&stats, payloads)
 	if len(payloads) == 0 {
-		return nil, stats, errors.New("no TransferGo QR payloads decoded")
+		return nil, stats, errors.New("未能从任何图片中识别出 TransferGo 二维码载荷")
 	}
 	return payloads, stats, nil
 }
@@ -462,7 +462,7 @@ func collectPayloadsSequentially(paths []string, maxFrameSize int, progress func
 	}
 	completePayloadStats(&stats, payloads)
 	if len(payloads) == 0 {
-		return nil, stats, errors.New("no TransferGo QR payloads decoded")
+		return nil, stats, errors.New("未能从任何图片中识别出 TransferGo 二维码载荷")
 	}
 	return payloads, stats, nil
 }
@@ -487,6 +487,14 @@ func completePayloadStats(stats *payloadCollectionStats, payloads [][]byte) {
 	stats.PayloadCount = len(payloads)
 	stats.UniquePayloadCount = len(unique)
 	stats.DuplicatePayloadCount = stats.PayloadCount - stats.UniquePayloadCount
+}
+
+// boolText 把布尔配置转换为便于阅读的中文。
+func boolText(value bool) string {
+	if value {
+		return "是"
+	}
+	return "否"
 }
 
 // sortedFramePaths 返回目录内按文件名排序的视频帧路径。

@@ -55,7 +55,7 @@ func TestProtocolRejectsWrongPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = RestoreFile(payloads, "wrong")
-	if err == nil || !strings.Contains(err.Error(), "password check failed") {
+	if err == nil || !strings.Contains(err.Error(), "密码校验失败") {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }
@@ -71,7 +71,7 @@ func TestProtocolRejectsMissingFrame(t *testing.T) {
 	}
 	payloads = append(payloads[:2], payloads[3:]...)
 	_, _, err = RestoreFile(payloads, "")
-	if err == nil || (!strings.Contains(err.Error(), "exceeds available payload count") && !strings.Contains(err.Error(), "missing")) {
+	if err == nil || (!strings.Contains(err.Error(), "当前仅识别到") && !strings.Contains(err.Error(), "缺少")) {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }
@@ -86,7 +86,7 @@ func TestProtocolRejectsMissingManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = RestoreFile(payloads[1:], "")
-	if err == nil || !strings.Contains(err.Error(), "missing manifest frame") {
+	if err == nil || !strings.Contains(err.Error(), "缺少文件清单帧") {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }
@@ -104,7 +104,7 @@ func TestProtocolRejectsConflictingDuplicate(t *testing.T) {
 	conflicting[len(conflicting)-1] ^= 0xff
 	payloads = append(payloads, conflicting)
 	_, _, err = RestoreFile(payloads, "")
-	if err == nil || !strings.Contains(err.Error(), "conflicting duplicate frame") {
+	if err == nil || !strings.Contains(err.Error(), "内容冲突的重复传输数据帧") {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }
@@ -121,7 +121,7 @@ func TestProtocolDetectsTamperedPlaintext(t *testing.T) {
 	payloads[1] = append([]byte{}, payloads[1]...)
 	payloads[1][len(payloads[1])-1] ^= 0xff
 	_, _, err = RestoreFile(payloads, "")
-	if err == nil || !strings.Contains(err.Error(), "hash does not match") {
+	if err == nil || !strings.Contains(err.Error(), "文件哈希值与文件清单不一致") {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }
@@ -140,7 +140,7 @@ func TestRestoreFileRejectsImpossibleFrameTotal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = RestoreFile([][]byte{payload}, "")
-	if err == nil || !strings.Contains(err.Error(), "exceeds available payload count") {
+	if err == nil || !strings.Contains(err.Error(), "当前仅识别到") {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }

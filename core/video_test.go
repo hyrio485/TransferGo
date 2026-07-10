@@ -66,9 +66,9 @@ func TestPrepareFramesDirLogsAutomaticDirectoryLifecycle(t *testing.T) {
 		t.Fatalf("temporary frames directory is not absolute: %q", framesDir)
 	}
 	for _, message := range []string{
-		"using temporary frames directory: " + framesDir,
-		"deleting temporary frames directory: " + framesDir,
-		"deleted temporary frames directory: " + framesDir,
+		"使用本次任务的临时帧目录：" + framesDir,
+		"正在清理临时帧目录：" + framesDir,
+		"临时帧目录清理完成：" + framesDir,
 	} {
 		if !strings.Contains(output, message) {
 			t.Errorf("log output does not contain %q: %q", message, output)
@@ -225,7 +225,7 @@ func TestRunWithFfmpegRejectsMissingExecutable(t *testing.T) {
 		},
 	}
 	err := ctx.runWithFfmpeg("", "-version")
-	if err == nil || !strings.Contains(err.Error(), "ffmpeg not found") {
+	if err == nil || !strings.Contains(err.Error(), "未找到 ffmpeg") {
 		t.Fatalf("runWithFfmpeg() error = %v", err)
 	}
 	if runCalled {

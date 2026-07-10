@@ -113,7 +113,7 @@ func TestEncodeRejectsQRCodeCropping(t *testing.T) {
 		13,
 		13,
 	)
-	if err == nil || !strings.Contains(err.Error(), "too small") {
+	if err == nil || !strings.Contains(err.Error(), "尺寸 1 像素过小") {
 		t.Fatalf("EncodeMultiByteArraysToSinglePng() error = %v", err)
 	}
 }
