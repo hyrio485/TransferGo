@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -39,6 +40,37 @@ func TestPrepareFramesDirCreatesUniqueDirectories(t *testing.T) {
 	for _, path := range []string{first, second} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("temporary directory %q still exists: %v", path, err)
+		}
+	}
+}
+
+// TestPrepareFramesDirLogsAutomaticDirectoryLifecycle 验证自动帧目录的使用和删除日志。
+// 前置条件：测试当前目录已经切换到 t.TempDir，标准输出可由测试临时捕获。
+// 执行方式：创建自动帧目录并立即调用清理函数。
+// 期望结果：返回绝对路径，日志包含目录使用、开始删除和删除完成。
+func TestPrepareFramesDirLogsAutomaticDirectoryLifecycle(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ctx := NewVideoContext()
+	var framesDir string
+	output := captureStdout(t, func() {
+		var cleanup func()
+		var err error
+		framesDir, cleanup, err = ctx.PrepareFramesDir("", "transfergo-log-", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanup()
+	})
+
+	if !filepath.IsAbs(framesDir) {
+		t.Fatalf("temporary frames directory is not absolute: %q", framesDir)
+	}
+	for _, message := range []string{
+		"using temporary frames directory: " + framesDir,
+		"deleted temporary frames directory: " + framesDir,
+	} {
+		if !strings.Contains(output, message) {
+			t.Errorf("log output does not contain %q: %q", message, output)
 		}
 	}
 }
@@ -220,4 +252,30 @@ func assertArgumentPair(t *testing.T, args []string, name string, value string) 
 		}
 	}
 	t.Fatalf("argument pair %q %q not found in %v", name, value, args)
+}
+
+// captureStdout 在 action 执行期间捕获标准输出，供日志断言使用。
+func captureStdout(t *testing.T, action func()) string {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stdout
+	os.Stdout = writer
+	defer func() {
+		os.Stdout = original
+		_ = writer.Close()
+		_ = reader.Close()
+	}()
+
+	action()
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(output)
 }

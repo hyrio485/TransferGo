@@ -4,6 +4,13 @@
 *.iml
 *.ipr
 
+### macOS ###
+.DS_Store
+
+### TransferGo 临时帧目录 ###
+/transfergo-encode-*/
+/transfergo-decode-*/
+
 /transfergo
 /dist/
 /files/

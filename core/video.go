@@ -42,18 +42,27 @@ func (ctx VideoContext) PrepareFramesDir(specified string, tempPrefix string, ke
 		if len(existing) > 0 {
 			return "", nil, fmt.Errorf("%s already contains frame_*.png files; choose an empty frames directory", specified)
 		}
+		LogI("using specified frames directory: %s\n", specified)
 		return specified, func() {}, nil
 	}
 
 	// 自动目录由本次运行拥有，随机后缀可以避免并发任务发生目录冲突。
-	tmp, err := os.MkdirTemp(".", tempPrefix)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return "", nil, E("get current working directory", err)
+	}
+	tmp, err := os.MkdirTemp(workingDir, tempPrefix)
 	if err != nil {
 		return "", nil, E("create temporary frames directory", err)
 	}
+	LogI("using temporary frames directory: %s\n", tmp)
 	cleanup := func() {
-		// 清理是尽力而为，因为主操作已经完成；暴露临时目录删除失败只会增加噪声，帮助不大。
 		if !keepTemp {
-			_ = os.RemoveAll(tmp)
+			if err := os.RemoveAll(tmp); err != nil {
+				LogW("failed to delete temporary frames directory %s: %v\n", tmp, err)
+				return
+			}
+			LogI("deleted temporary frames directory: %s\n", tmp)
 		}
 	}
 	return tmp, cleanup, nil
