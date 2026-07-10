@@ -29,6 +29,20 @@ const (
 	maxImagePixels         = 64 * 1024 * 1024
 )
 
+// qrGridDimensionFits 判断单个方向是否能容纳全部二维码及其最小间距。
+func qrGridDimensionFits(imageSize int, count int, qrSize int) bool {
+	if imageSize <= 0 || count <= 0 || qrSize <= 0 {
+		return false
+	}
+	// 最小需要的距离：每个二维码的前后各留大小的五分之一的gap，最后留有10像素的余量
+	gap := qrSize / 5
+	if qrSize%5 != 0 {
+		gap++
+	}
+	requiredSize := count*qrSize + (count+1)*gap + 10
+	return requiredSize <= imageSize
+}
+
 // region Encode
 
 // EncodeMultiByteArraysToSinglePng 把每个字节数组编码成一个二维码，并按网格排列到同一张 PNG 中。
@@ -40,7 +54,7 @@ func EncodeMultiByteArraysToSinglePng(bytes [][]byte, path string, qrSize int, r
 	if imageWidth > maxImageDimension || imageHeight > maxImageDimension || imageWidth > maxImagePixels/imageHeight {
 		return errors.New("output image dimensions are too large")
 	}
-	if rows > imageHeight/qrSize || cols > imageWidth/qrSize {
+	if !qrGridDimensionFits(imageHeight, rows, qrSize) || !qrGridDimensionFits(imageWidth, cols, qrSize) {
 		return errors.New("QR grid does not fit inside output image")
 	}
 	count := len(bytes)
@@ -86,16 +100,80 @@ func qrEncodeHints() map[gozxing.EncodeHintType]any {
 	return map[gozxing.EncodeHintType]any{
 		gozxing.EncodeHintType_CHARACTER_SET:    characterSet,
 		gozxing.EncodeHintType_ERROR_CORRECTION: errorCorrectionLevel,
+		gozxing.EncodeHintType_MARGIN:           0,
 	}
 }
 
 func newWhiteGrayImage(width int, height int) *image.Gray {
 	img := image.NewGray(image.Rect(0, 0, width, height))
 	for i := range img.Pix {
-		img.Pix[i] = 255
+		img.Pix[i] = 0xEE
 	}
 	return img
 }
+
+//// drawQRCode 生成无白边的原生二维码，并使用最近邻缩放绘制到网格中的指定位置。
+//func drawQRCode(img *image.Gray, content string, index int, qrSize int, cols int, gapX int, gapY int, hints map[gozxing.EncodeHintType]any) error {
+//	matrix, err := gozxingqr.NewQRCodeWriter().Encode(content, gozxing.BarcodeFormat_QR_CODE, 0, 0, hints)
+//	if err != nil {
+//		return E("encode string to QR code", err)
+//	}
+//	matrixWidth := matrix.GetWidth()
+//	matrixHeight := matrix.GetHeight()
+//	if matrixWidth > qrSize || matrixHeight > qrSize {
+//		return fmt.Errorf("QR size %d is too small; encoded matrix requires %dx%d pixels", qrSize, matrix.GetWidth(), matrix.GetHeight())
+//	}
+//
+//	qrImage := newWhiteGrayImage(matrixWidth, matrixHeight)
+//	for y := 0; y < matrixHeight; y++ {
+//		for x := 0; x < matrixWidth; x++ {
+//			if matrix.Get(x, y) {
+//				qrImage.SetGray(x, y, color.Gray{Y: 0})
+//			}
+//		}
+//	}
+//
+//	idxX := index % cols
+//	idxY := index / cols
+//	offsetX := gapX + idxX*(qrSize+gapX)
+//	offsetY := gapY + idxY*(qrSize+gapY)
+//	destination := image.Rect(offsetX, offsetY, offsetX+qrSize, offsetY+qrSize)
+//	draw.NearestNeighbor.Scale(img, destination, qrImage, qrImage.Bounds(), draw.Src, nil)
+//
+//	return nil
+//}
+
+//// drawQRCode 把一个二维码矩阵绘制到网格中的指定位置，并拒绝尺寸不足导致的矩阵裁剪。
+//func drawQRCode(img *image.Gray, content string, index int, qrSize int, cols int, gapX int, gapY int, hints map[gozxing.EncodeHintType]any) error {
+//	matrix, err := gozxingqr.NewQRCodeWriter().Encode(content, gozxing.BarcodeFormat_QR_CODE, 0, 0, hints)
+//	if err != nil {
+//		return E("encode string to QR code", err)
+//	}
+//	matrixSize := matrix.GetWidth()
+//	if matrixSize > qrSize || matrix.GetHeight() > qrSize {
+//		return fmt.Errorf("QR size %d is too small; encoded matrix requires %dx%d pixels", qrSize, matrix.GetWidth(), matrix.GetHeight())
+//	}
+//	scale := qrSize / matrixSize
+//
+//	idxX := index % cols
+//	idxY := index / cols
+//	offsetX := gapX + idxX*(qrSize+gapX)
+//	offsetY := gapY + idxY*(qrSize+gapY)
+//
+//	for y := 0; y < matrixSize; y++ {
+//		for x := 0; x < matrixSize; x++ {
+//			if matrix.Get(x, y) {
+//				for dy := 0; dy < scale; dy++ {
+//					for dx := 0; dx < scale; dx++ {
+//						img.SetGray(offsetX+x*scale+dx, offsetY+y*scale+dy, color.Gray{Y: 0})
+//					}
+//				}
+//			}
+//		}
+//	}
+//
+//	return nil
+//}
 
 // drawQRCode 把一个二维码矩阵绘制到网格中的指定位置，并拒绝尺寸不足导致的矩阵裁剪。
 func drawQRCode(img *image.Gray, content string, index int, qrSize int, cols int, gapX int, gapY int, hints map[gozxing.EncodeHintType]any) error {
@@ -116,6 +194,8 @@ func drawQRCode(img *image.Gray, content string, index int, qrSize int, cols int
 		for x := 0; x < qrSize; x++ {
 			if matrix.Get(x, y) {
 				img.SetGray(offsetX+x, offsetY+y, color.Gray{Y: 0})
+			} else {
+				img.SetGray(offsetX+x, offsetY+y, color.Gray{Y: 0xFF})
 			}
 		}
 	}

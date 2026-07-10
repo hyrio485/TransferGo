@@ -21,7 +21,7 @@ const (
 
 // log 为格式化内容附加级别前缀和终端颜色，并忽略日志输出失败。
 func log(w io.Writer, color string, prefix string, format string, a ...any) {
-	_, _ = fmt.Fprintf(w, color+prefix+format+colorReset, a...)
+	_, _ = fmt.Fprintf(w, color+prefix+colorReset+format, a...)
 }
 
 // LogE 向标准错误输出红色错误日志。

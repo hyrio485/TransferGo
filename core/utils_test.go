@@ -13,11 +13,11 @@ import (
 // TestLogAddsPrefixAndColor 验证底层日志格式包含前缀和颜色。
 // 前置条件：使用 bytes.Buffer 代替标准输出，避免污染测试终端。
 // 执行方式：向 log 传入颜色、前缀、格式字符串和格式参数。
-// 期望结果：缓冲区内容依次包含颜色、前缀、格式化正文和颜色重置符。
+// 期望结果：缓冲区内容依次包含颜色、前缀、颜色重置符和格式化正文。
 func TestLogAddsPrefixAndColor(t *testing.T) {
 	var output bytes.Buffer
 	log(&output, colorGreen, prefixInfo, "message %d", 1)
-	want := colorGreen + prefixInfo + "message 1" + colorReset
+	want := colorGreen + prefixInfo + colorReset + "message 1"
 	if output.String() != want {
 		t.Fatalf("log output = %q, want %q", output.String(), want)
 	}

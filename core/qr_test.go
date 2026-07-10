@@ -23,7 +23,7 @@ func TestQRCodeBinaryRoundTrip(t *testing.T) {
 		input[i] = byte(i)
 	}
 	path := filepath.Join(t.TempDir(), "frame.png")
-	if err := EncodeMultiByteArraysToSinglePng([][]byte{input}, path, 300, 1, 1, 340, 340); err != nil {
+	if err := EncodeMultiByteArraysToSinglePng([][]byte{input}, path, 300, 1, 1, 430, 430); err != nil {
 		t.Fatal(err)
 	}
 	payloads, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, defaultDecodeFrameSize)
@@ -42,7 +42,7 @@ func TestQRCodeBinaryRoundTrip(t *testing.T) {
 func TestQRCodeMultiplePayloadsRoundTrip(t *testing.T) {
 	inputs := [][]byte{[]byte("one"), []byte("two"), []byte("three"), []byte("four")}
 	path := filepath.Join(t.TempDir(), "frame.png")
-	if err := EncodeMultiByteArraysToSinglePng(inputs, path, 200, 2, 2, 440, 440); err != nil {
+	if err := EncodeMultiByteArraysToSinglePng(inputs, path, 200, 2, 2, 530, 530); err != nil {
 		t.Fatal(err)
 	}
 	payloads, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, defaultDecodeFrameSize)
@@ -85,6 +85,7 @@ func TestEncodeRejectsInvalidQRCodeOptions(t *testing.T) {
 		{name: "too many payloads", payloads: [][]byte{[]byte("one"), []byte("two")}, qrSize: 200, rows: 1, cols: 1, imageWidth: 240, imageHeight: 240},
 		{name: "zero QR size", payloads: [][]byte{[]byte("one")}, qrSize: 0, rows: 1, cols: 1, imageWidth: 240, imageHeight: 240},
 		{name: "grid does not fit", payloads: [][]byte{[]byte("one")}, qrSize: 200, rows: 2, cols: 2, imageWidth: 300, imageHeight: 300},
+		{name: "gap is too small", payloads: [][]byte{[]byte("one")}, qrSize: 200, rows: 2, cols: 2, imageWidth: 519, imageHeight: 520},
 		{name: "image too large", payloads: [][]byte{[]byte("one")}, qrSize: 200, rows: 1, cols: 1, imageWidth: maxImageDimension + 1, imageHeight: 240},
 	}
 	for _, test := range tests {
@@ -109,8 +110,8 @@ func TestEncodeRejectsQRCodeCropping(t *testing.T) {
 		1,
 		1,
 		1,
-		2,
-		2,
+		13,
+		13,
 	)
 	if err == nil || !strings.Contains(err.Error(), "too small") {
 		t.Fatalf("EncodeMultiByteArraysToSinglePng() error = %v", err)

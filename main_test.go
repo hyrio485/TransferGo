@@ -167,8 +167,8 @@ func TestWritePayloadImagesParallelModes(t *testing.T) {
 				QRSize:      240,
 				Rows:        1,
 				Cols:        1,
-				ImageWidth:  300,
-				ImageHeight: 300,
+				ImageWidth:  346,
+				ImageHeight: 346,
 				Parallel:    parallel,
 			}
 			if err := app.writePayloadImages(payloads, dir, opt); err != nil {
@@ -233,7 +233,7 @@ func TestCollectPayloadsFromImages(t *testing.T) {
 	validPath := filepath.Join(dir, "frame_000001.png")
 	invalidPath := filepath.Join(dir, "frame_000002.png")
 	wantPayload := []byte("payload")
-	if err := core.EncodeMultiByteArraysToSinglePng([][]byte{wantPayload}, validPath, 240, 1, 1, 300, 300); err != nil {
+	if err := core.EncodeMultiByteArraysToSinglePng([][]byte{wantPayload}, validPath, 240, 1, 1, 346, 346); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(invalidPath, []byte("not an image"), 0644); err != nil {

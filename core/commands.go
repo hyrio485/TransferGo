@@ -13,7 +13,7 @@ import (
 const (
 	defaultFPS         = 3.0
 	defaultSampleFPS   = 9.0
-	defaultQRSize      = 240
+	defaultQRSize      = 175
 	defaultImageWidth  = 800
 	defaultImageHeight = 800
 	defaultRows        = 3
@@ -23,14 +23,15 @@ const (
 )
 
 const usageText = `用法：
-  transfergo encode [参数]
-  transfergo decode [参数]
+  transfergo encode [参数] <文件>
+  transfergo decode [参数] <视频>
 
 标记为【必填】的参数必须提供，其余参数均为可选。
 
 encode 参数：
-  -i、-in <文件>           【必填】输入文件
-  -o、-out <视频>          【必填】输出视频路径
+  <文件>                   【必填】输入文件
+  -i、-in <文件>           输入文件，可代替位置参数
+  -o、-out <视频>          输出视频路径，默认在输入文件名后追加 .mp4
   -p、-password <密码>     AES-GCM 加密密码，默认不加密
   -ffmpeg <路径>           ffmpeg 可执行文件路径，默认依次使用 FFMPEG_PATH 和 PATH
   -frames-dir <目录>       生成的 PNG 帧目录，默认创建随机临时目录
@@ -47,7 +48,8 @@ encode 参数：
   -keep-frames             保留生成的 PNG 帧，默认关闭
 
 decode 参数：
-  -i、-in <视频>           【必填】输入视频路径
+  <视频>                   【必填】输入视频路径
+  -i、-in <视频>           输入视频路径，可代替位置参数
   -o、-out <文件>          输出文件路径，默认使用清单中的原文件名
   -p、-password <密码>     加密视频的解码密码，默认空
   -ffmpeg <路径>           ffmpeg 可执行文件路径，默认依次使用 FFMPEG_PATH 和 PATH
@@ -144,8 +146,14 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 	if err := fs.Parse(args); err != nil {
 		return EncodeOptions{}, E("parse encode flags failed", err)
 	}
-	if fs.NArg() != 0 {
-		return EncodeOptions{}, errors.New("encode does not accept positional arguments")
+	if fs.NArg() > 1 {
+		return EncodeOptions{}, errors.New("encode accepts only one positional input file")
+	}
+	if fs.NArg() == 1 {
+		if opt.Input != "" {
+			return EncodeOptions{}, errors.New("encode input must be specified either as a positional argument or with -i, not both")
+		}
+		opt.Input = fs.Arg(0)
 	}
 	if opt.QRSize <= 0 {
 		return EncodeOptions{}, errors.New("-qr-size must be greater than 0")
@@ -168,11 +176,10 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 	if opt.ImageHeight%2 != 0 {
 		return EncodeOptions{}, errors.New("-height must be an even number for yuv420p video")
 	}
-	// 使用除法判断网格是否能放入图片，避免直接相乘造成整数溢出。
-	if opt.Rows > opt.ImageHeight/opt.QRSize {
+	if !qrGridDimensionFits(opt.ImageHeight, opt.Rows, opt.QRSize) {
 		return EncodeOptions{}, errors.New("-rows and -qr-size do not fit inside -height")
 	}
-	if opt.Cols > opt.ImageWidth/opt.QRSize {
+	if !qrGridDimensionFits(opt.ImageWidth, opt.Cols, opt.QRSize) {
 		return EncodeOptions{}, errors.New("-cols and -qr-size do not fit inside -width")
 	}
 	maxInt := int(^uint(0) >> 1)
@@ -180,10 +187,10 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 		return EncodeOptions{}, errors.New("-rows and -cols produce too many grid slots")
 	}
 	if opt.Input == "" {
-		return EncodeOptions{}, errors.New("encode requires -i")
+		return EncodeOptions{}, errors.New("encode requires an input file")
 	}
 	if opt.Output == "" {
-		return EncodeOptions{}, errors.New("encode requires -o")
+		opt.Output = opt.Input + ".mp4"
 	}
 	if opt.FPS <= 0 || math.IsNaN(opt.FPS) || math.IsInf(opt.FPS, 0) {
 		return EncodeOptions{}, errors.New("-fps must be greater than 0")
@@ -224,11 +231,17 @@ func (ctx CommandContext) ParseDecodeOptions(args []string) (DecodeOptions, erro
 	if err := fs.Parse(args); err != nil {
 		return DecodeOptions{}, E("parse decode flags", err)
 	}
-	if fs.NArg() != 0 {
-		return DecodeOptions{}, errors.New("decode does not accept positional arguments")
+	if fs.NArg() > 1 {
+		return DecodeOptions{}, errors.New("decode accepts only one positional input video")
+	}
+	if fs.NArg() == 1 {
+		if opt.Input != "" {
+			return DecodeOptions{}, errors.New("decode input must be specified either as a positional argument or with -i, not both")
+		}
+		opt.Input = fs.Arg(0)
 	}
 	if opt.Input == "" {
-		return DecodeOptions{}, errors.New("decode requires -i")
+		return DecodeOptions{}, errors.New("decode requires an input video")
 	}
 	if opt.SampleFPS <= 0 || math.IsNaN(opt.SampleFPS) || math.IsInf(opt.SampleFPS, 0) {
 		return DecodeOptions{}, errors.New("-sample-fps must be greater than 0")
