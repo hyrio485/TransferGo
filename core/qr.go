@@ -2,9 +2,11 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 
 	// 注册解码器
@@ -23,12 +25,24 @@ const (
 	characterSet         = "ISO-8859-1"
 	errorCorrectionLevel = qrdecoder.ErrorCorrectionLevel_L
 	maxDecodeFrameSize   = 1000
+	maxImageDimension    = 16_384
+	maxImagePixels       = 64 * 1024 * 1024
 )
 
 // region Encode
 
 // EncodeMultiByteArraysToSinglePng 把每个字节数组编码成一个二维码，并按网格排列到同一张 PNG 中。
+// 函数会在分配图片内存前校验尺寸和像素总量，避免异常参数造成过量内存占用。
 func EncodeMultiByteArraysToSinglePng(bytes [][]byte, path string, qrSize int, rows int, cols int, imageWidth int, imageHeight int) error {
+	if qrSize <= 0 || rows <= 0 || cols <= 0 || imageWidth <= 0 || imageHeight <= 0 {
+		return errors.New("QR and image dimensions must be greater than 0")
+	}
+	if imageWidth > maxImageDimension || imageHeight > maxImageDimension || imageWidth > maxImagePixels/imageHeight {
+		return errors.New("output image dimensions are too large")
+	}
+	if rows > imageHeight/qrSize || cols > imageWidth/qrSize {
+		return errors.New("QR grid does not fit inside output image")
+	}
 	count := len(bytes)
 	if count == 0 {
 		return errors.New("no byte arrays to encode")
@@ -58,11 +72,12 @@ func EncodeMultiByteArraysToSinglePng(bytes [][]byte, path string, qrSize int, r
 	if err != nil {
 		return E("create output file", err)
 	}
-	defer CloseFile(fileHandle)
-
-	err = png.Encode(fileHandle, img)
-	if err != nil {
+	if err := png.Encode(fileHandle, img); err != nil {
+		CloseFile(fileHandle)
 		return E("encode PNG", err)
+	}
+	if err := fileHandle.Close(); err != nil {
+		return E("close PNG", err)
 	}
 	return nil
 }
@@ -82,10 +97,14 @@ func newWhiteGrayImage(width int, height int) *image.Gray {
 	return img
 }
 
+// drawQRCode 把一个二维码矩阵绘制到网格中的指定位置，并拒绝尺寸不足导致的矩阵裁剪。
 func drawQRCode(img *image.Gray, content string, index int, qrSize int, cols int, gapX int, gapY int, hints map[gozxing.EncodeHintType]any) error {
 	matrix, err := gozxingqr.NewQRCodeWriter().Encode(content, gozxing.BarcodeFormat_QR_CODE, qrSize, qrSize, hints)
 	if err != nil {
 		return E("encode string to QR code", err)
+	}
+	if matrix.GetWidth() != qrSize || matrix.GetHeight() != qrSize {
+		return fmt.Errorf("QR size %d is too small; encoded matrix requires %dx%d pixels", qrSize, matrix.GetWidth(), matrix.GetHeight())
 	}
 
 	idxX := index % cols
@@ -108,7 +127,8 @@ func drawQRCode(img *image.Gray, content string, index int, qrSize int, cols int
 
 // region Decode
 
-// DecodeSinglePngToMultiByteArrays 解码一张 PNG 中的所有二维码，并恢复各自的原始字节数组。
+// DecodeSinglePngToMultiByteArrays 解码一张图片中的所有二维码，并恢复各自的原始字节数组。
+// 找不到二维码属于正常情况，此时返回空切片而不是错误。
 func DecodeSinglePngToMultiByteArrays(path string) ([][]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -116,6 +136,17 @@ func DecodeSinglePngToMultiByteArrays(path string) ([][]byte, error) {
 	}
 	defer CloseFile(file)
 
+	// 先读取轻量级图片头，避免在完整解码后才发现图片尺寸超出安全范围。
+	config, _, err := image.DecodeConfig(file)
+	if err != nil {
+		return nil, E("decode image config", err)
+	}
+	if config.Width <= 0 || config.Height <= 0 || config.Width > maxImageDimension || config.Height > maxImageDimension || config.Width > maxImagePixels/config.Height {
+		return nil, errors.New("image dimensions are too large")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, E("rewind image", err)
+	}
 	img, _, err := image.Decode(file)
 	if err != nil {
 		return nil, E("decode image", err)
@@ -173,6 +204,7 @@ func qrDecodeHints() map[gozxing.DecodeHintType]any {
 	}
 }
 
+// resizeImageWithinLimit 在保持宽高比的前提下，把图片最长边缩小到解码限制以内。
 func resizeImageWithinLimit(img image.Image) image.Image {
 	bounds := img.Bounds()
 	width := bounds.Dx()

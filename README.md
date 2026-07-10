@@ -1,45 +1,154 @@
 # TransferGo
 
-`TransferGo` 是一个通过二维码视频传输文件的命令行工具。编码端把文件拆成多个字节块，每个块编码成二维码帧，再用 ffmpeg 合成为视频；解码端从录制回来的视频中抽帧、识别二维码、校验序号并还原文件。
+TransferGo 是一个通过二维码视频传输文件的命令行工具。它把文件拆分为带序号的协议帧，将多个二维码排列到 PNG 图片中，再通过 ffmpeg 编码为 H.264 视频；解码时执行相反流程，并使用文件长度和 SHA-256 摘要校验还原结果。
 
-它适合传输几十 MB 以内的小文件。更大的文件理论上可行，但视频时长会变长，拍摄和解码成本也会明显增加。
+这个项目适合无法直接建立网络连接，但可以播放、录制或转交视频的场景。它更适合几十 MB 以内的小文件，不适合作为高吞吐量或强抗丢包的通用传输协议。
 
-## 功能
+## 目录
 
-- 单个可执行文件，使用 `encode` / `decode` 子命令区分功能。
-- 支持把任意文件编码成 MP4 视频。
-- 支持从视频文件中解码并还原原文件。
-- 每个二维码帧包含序号和总帧数，缺帧会直接失败并提示缺失序号。
-- 默认输出 `800x800` 视频，每帧放置 `3x3` 个黑白二维码格子。
-- 编码和解码过程会输出阶段进度；解码二维码图片时会使用 Go 协程并行处理。
-- 支持可选密码加密。
-- 加密模式使用 AES-GCM，并在 manifest 帧中做密码认证；密码错误会直接拒绝，不会等到文件损坏后才发现。
-- 二维码纠错等级使用较低的 L 级，以优先提升容量。
+- [主要特性](#主要特性)
+- [工作原理](#工作原理)
+- [环境要求](#环境要求)
+- [安装与构建](#安装与构建)
+- [快速开始](#快速开始)
+- [命令参数](#命令参数)
+- [帧目录](#帧目录)
+- [加密与安全](#加密与安全)
+- [可靠性与限制](#可靠性与限制)
+- [常见问题](#常见问题)
+- [测试](#测试)
+- [项目结构](#项目结构)
 
-## 依赖
+## 主要特性
 
-- Go
-- ffmpeg
+- 使用单个可执行文件，通过 `encode` 和 `decode` 子命令完成编码与解码。
+- 支持任意二进制文件，不依赖文件类型或文本编码。
+- 默认在一张 `800×800` 图片中排列 `3×3` 个二维码。
+- 支持自定义视频帧率、二维码尺寸、网格行列数、数据块大小和 H.264 CRF。
+- 支持可选的 PBKDF2-SHA256、AES-256-GCM 密码加密。
+- 每个协议帧包含版本、类型、序号、总帧数和帧体长度。
+- 自动忽略内容完全相同的重复帧，并拒绝内容冲突的同序号帧。
+- 还原完成后校验文件长度和 SHA-256 摘要。
+- 默认拒绝覆盖已有视频或文件，必须显式传入 `-replace`。
+- 自动帧目录使用随机名称，任务完成后默认清理。
 
-ffmpeg 查找顺序为：`-ffmpeg` 参数、`FFMPEG_PATH` 环境变量、`PATH` 中的 `ffmpeg` 命令。
+## 工作原理
 
-## 构建
+### 编码流程
 
-```bash
-go build -o transfergo .
+```text
+输入文件
+  ↓
+文件清单＋数据分块
+  ↓
+协议帧编码，可选 AES-GCM 加密
+  ↓
+多个二维码组成一张 PNG 图片
+  ↓
+ffmpeg 编码 H.264、yuv420p 视频
 ```
 
-构建后的可执行文件是：
+编码过程会执行以下步骤：
+
+1. 把输入文件完整读入内存。
+2. 计算文件长度和 SHA-256 摘要，并生成序号为零的清单帧。
+3. 按 `-chunk-size` 把文件拆成若干数据帧。
+4. 如果设置了密码，为清单帧和每个数据帧分别执行 AES-GCM 加密。
+5. 把协议帧编码为二维码，并按 `-rows × -cols` 分组生成 PNG 图片。
+6. 调用 ffmpeg 把连续编号的 PNG 图片编码为视频。
+
+### 解码流程
+
+```text
+输入视频
+  ↓
+ffmpeg 按采样帧率抽取 PNG
+  ↓
+识别每张图片中的多个二维码
+  ↓
+解析、去重和检查协议帧
+  ↓
+可选 AES-GCM 解密
+  ↓
+按序拼接并校验文件
+  ↓
+安全写入输出文件
+```
+
+视频抽帧通常会产生重复二维码。TransferGo 会按协议帧序号去重，只有帧内容完全一致时才会忽略重复项。缺帧、冲突帧、密码错误、长度不一致或摘要不一致都会导致解码失败。
+
+## 环境要求
+
+- Go `1.26.2` 或兼容的 Go `1.26` 工具链。
+- ffmpeg，并且包含 `libx264` 编码器。
+
+确认环境：
 
 ```bash
-./transfergo
+go version
+ffmpeg -version
 ```
+
+ffmpeg 的查找顺序如下：
+
+1. 命令行参数 `-ffmpeg`。
+2. 环境变量 `FFMPEG_PATH`。
+3. `PATH` 中的 `ffmpeg`。
+
+ffmpeg 是运行时外部依赖，不会被编译进 TransferGo 可执行文件。
+
+## 安装与构建
+
+### 从源码构建
+
+```bash
+git clone https://github.com/hyrio485/TransferGo.git
+cd TransferGo
+go mod download
+go build -trimpath -o transfergo .
+```
+
+构建完成后查看帮助：
+
+```bash
+./transfergo help
+```
+
+Windows 可以把输出文件名改为 `transfergo.exe`：
+
+```powershell
+go build -trimpath -o transfergo.exe .
+```
+
+### 安装到 Go 工具目录
+
+在仓库根目录执行：
+
+```bash
+go install .
+```
+
+生成的程序会安装到 `GOBIN`，或者默认的 `GOPATH/bin`。
+
+### 交叉编译
+
+TransferGo 本身是纯 Go 程序，可以使用 Go 的交叉编译能力。例如生成 Linux AMD64 可执行文件：
+
+```bash
+GOOS=linux GOARCH=amd64 go build -trimpath -o transfergo-linux-amd64 .
+```
+
+目标系统仍然需要单独安装可用的 ffmpeg。
 
 ## 快速开始
 
-建议把测试数据放在 `files/` 目录中。这个目录已经被 `.gitignore` 忽略。
+下面的示例使用已经被 `.gitignore` 忽略的 `files` 目录：
 
-### 编码文件为视频
+```bash
+mkdir -p files
+```
+
+### 编码文件
 
 ```bash
 ./transfergo encode \
@@ -47,21 +156,13 @@ go build -o transfergo .
   -o files/output.mp4
 ```
 
-如果 ffmpeg 不在 `PATH` 中：
+如果输出视频已经存在，默认会拒绝覆盖。确认需要替换时传入 `-replace`：
 
 ```bash
 ./transfergo encode \
   -i files/input.bin \
   -o files/output.mp4 \
-  -ffmpeg /Users/hyrio/Workspace/Environments/ffmpeg/ffmpeg
-```
-
-也可以通过环境变量指定：
-
-```bash
-FFMPEG_PATH=/Users/hyrio/Workspace/Environments/ffmpeg/ffmpeg ./transfergo encode \
-  -i files/input.bin \
-  -o files/output.mp4
+  -replace
 ```
 
 ### 使用密码加密
@@ -69,11 +170,11 @@ FFMPEG_PATH=/Users/hyrio/Workspace/Environments/ffmpeg/ffmpeg ./transfergo encod
 ```bash
 ./transfergo encode \
   -i files/input.bin \
-  -o files/output.mp4 \
+  -o files/encrypted.mp4 \
   -p "your-password"
 ```
 
-### 从视频解码还原文件
+### 解码文件
 
 ```bash
 ./transfergo decode \
@@ -81,14 +182,16 @@ FFMPEG_PATH=/Users/hyrio/Workspace/Environments/ffmpeg/ffmpeg ./transfergo encod
   -o files/restored.bin
 ```
 
-如果视频加密过，解码时必须传入相同密码：
+解码加密视频时必须提供相同密码：
 
 ```bash
 ./transfergo decode \
-  -i files/output.mp4 \
+  -i files/encrypted.mp4 \
   -o files/restored.bin \
   -p "your-password"
 ```
+
+如果不传 `-o`，程序会使用清单中的原始文件名。来自清单的默认文件名必须是安全的纯文件名，不能包含绝对路径、上级目录或路径分隔符。
 
 覆盖已有输出文件：
 
@@ -96,158 +199,289 @@ FFMPEG_PATH=/Users/hyrio/Workspace/Environments/ffmpeg/ffmpeg ./transfergo encod
 ./transfergo decode \
   -i files/output.mp4 \
   -o files/restored.bin \
-  -p "your-password" \
   -replace
 ```
 
-验证还原结果：
+### 验证还原结果
+
+macOS 或 Linux：
 
 ```bash
 cmp files/input.bin files/restored.bin
 ```
 
-## 参数
+macOS 可以比较 SHA-256：
+
+```bash
+shasum -a 256 files/input.bin files/restored.bin
+```
+
+Linux 通常使用：
+
+```bash
+sha256sum files/input.bin files/restored.bin
+```
+
+### 指定 ffmpeg
+
+通过命令行参数指定：
+
+```bash
+./transfergo encode \
+  -i files/input.bin \
+  -o files/output.mp4 \
+  -ffmpeg /path/to/ffmpeg
+```
+
+或者设置环境变量：
+
+```bash
+FFMPEG_PATH=/path/to/ffmpeg ./transfergo encode \
+  -i files/input.bin \
+  -o files/output.mp4
+```
+
+## 命令参数
+
+查看程序内置的完整帮助：
+
+```bash
+./transfergo help
+```
+
+命令不接受额外的位置参数。
 
 ### encode
 
 ```bash
-./transfergo encode -i <file> -o <video.mp4> [options]
+./transfergo encode -i <文件> -o <视频> [参数]
 ```
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `-i` | 无 | 输入文件，必填 |
-| `-o` | 无 | 输出视频路径，必填 |
-| `-p` | 空 | 可选密码；设置后会启用 AES-GCM 加密 |
-| `-ffmpeg` | `FFMPEG_PATH` 或 `ffmpeg` | ffmpeg 可执行文件路径 |
-| `-fps` | `3` | 输出视频帧率 |
-| `-qr-size` | `240` | 每个格子内二维码的像素尺寸 |
-| `-qr-version` | `12` | 二维码版本，1 到 40；较高版本容量更大，但对拍摄清晰度要求更高 |
-| `-width` / `-video-width` | `800` | 输出视频宽度 |
-| `-height` / `-video-height` | `800` | 输出视频高度 |
-| `-grid-size` | `3` | 每帧二维码网格行列数，默认 `3x3` |
-| `-chunk-size` | `0` | 每个数据二维码承载的明文字节数；0 表示使用更适合手机录像的默认值 |
-| `-crf` | `0` | x264 CRF；0 表示无损 |
-| `-frames-dir` | 当前目录下的时间戳目录 | 指定二维码帧输出目录 |
-| `-keep-frames` | `false` | 保留生成的二维码 PNG 帧 |
+| `-i`、`-in` | 无 | 输入文件，必填。 |
+| `-o`、`-out` | 无 | 输出视频路径，必填。 |
+| `-p`、`-password` | 空 | AES-GCM 加密密码；非空时启用加密。 |
+| `-ffmpeg` | 自动查找 | ffmpeg 可执行文件路径。 |
+| `-frames-dir` | 随机临时目录 | 生成的 PNG 帧目录。 |
+| `-fps` | `3` | 输出视频帧率，必须是大于零的有限数值。 |
+| `-qr-size` | `240` | 单个二维码的宽高像素数，必须大于零。 |
+| `-width` | `800` | 输出视频宽度，必须是正偶数。 |
+| `-height` | `800` | 输出视频高度，必须是正偶数。 |
+| `-rows` | `3` | 每张图片中的二维码行数，必须大于零。 |
+| `-cols` | `3` | 每张图片中的二维码列数，必须大于零。 |
+| `-chunk-size` | `240` | 每个数据二维码承载的明文字节数，必须大于零。 |
+| `-crf` | `24` | x264 CRF，取值范围为 `0` 至 `51`；数值越小，画质越高、文件越大。 |
+| `-replace` | `false` | 允许替换已有输出视频。 |
+| `-keep-frames` | `false` | 保留自动创建的 PNG 帧目录。 |
+
+网格必须能够放入输出图片，即 `rows × qr-size ≤ height`，并且 `cols × qr-size ≤ width`。二维码内容超过容量或 `qr-size` 小于实际二维码矩阵时，编码会失败，不会静默裁剪二维码。
 
 ### decode
 
 ```bash
-./transfergo decode -i <video.mp4> [options]
+./transfergo decode -i <视频> [参数]
 ```
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `-i` | 无 | 输入视频路径，必填 |
-| `-o` | manifest 中的原文件名 | 输出文件路径 |
-| `-p` | 空 | 加密视频的解码密码 |
-| `-ffmpeg` | `FFMPEG_PATH` 或 `ffmpeg` | ffmpeg 可执行文件路径 |
-| `-sample-fps` | `9` | 解码时从视频抽帧的采样帧率 |
-| `-grid-size` | `3` | 解码时尝试的二维码网格行列数 |
-| `-frames-dir` | 当前目录下的时间戳目录 | 指定抽帧输出目录 |
-| `-keep-frames` | `false` | 保留抽取出的 PNG 帧 |
-| `-replace` | `false` | 允许替换已有输出文件 |
+| `-i`、`-in` | 无 | 输入视频路径，必填。 |
+| `-o`、`-out` | 清单中的原文件名 | 输出文件路径。 |
+| `-p`、`-password` | 空 | 加密视频的解码密码。 |
+| `-ffmpeg` | 自动查找 | ffmpeg 可执行文件路径。 |
+| `-frames-dir` | 随机临时目录 | 从视频中抽取的 PNG 帧目录。 |
+| `-sample-fps` | `9` | 视频抽帧率，必须是大于零的有限数值。 |
+| `-replace` | `false` | 允许替换已有输出文件。 |
+| `-keep-frames` | `false` | 保留自动创建的 PNG 帧目录。 |
 
-## 传输流程
+通常建议让 `-sample-fps` 不低于编码时的 `-fps`。默认编码帧率为 `3`，默认解码采样帧率为 `9`，允许同一个协议帧被多次采样并在协议层去重。
 
-编码时：
+## 帧目录
 
-1. 读取输入文件。
-2. 按 chunk 拆分为多个字节块。
-3. 生成 manifest 帧，保存文件名、文件大小、chunk 数量和 SHA-256。
-4. 可选地用密码派生 AES-GCM 密钥。
-5. 将 manifest 和每个数据块编码成协议二维码。
-6. 按 `3x3` 网格把黑白二维码打包到固定尺寸 PNG 中。
-7. 调用 ffmpeg 将 PNG 帧合成为 MP4。
-
-解码时：
-
-1. 调用 ffmpeg 从视频中抽取 PNG 帧。
-2. 跳过无二维码的噪声图片，并对整图、中心区域、高对比内容区域、九宫格小块和拉正后的候选区域分别尝试识别。
-3. 从每张图片中收集多个二维码载荷。
-4. 按序号去重并收集帧。
-5. 读取 manifest。
-6. 如果视频已加密，先用 manifest 中的认证块校验密码。
-7. 检查是否缺帧。
-8. 解密数据帧并按序拼接。
-9. 校验文件大小和 SHA-256。
-10. 写出还原文件。
-
-## 加密说明
-
-启用 `-p` 后：
-
-- 使用 PBKDF2-SHA256 从密码派生 256-bit AES 密钥。
-- 使用 AES-GCM 做认证加密。
-- manifest 帧包含一个加密的密码校验内容。
-- 每个数据帧单独加密，并使用独立 nonce。
-- 密码错误时，解码会在 manifest 阶段失败，错误为 `password check failed`。
-
-注意：密码不会明文写入视频。
-
-## 丢帧和失败策略
-
-每个二维码帧都包含：
-
-- 协议版本
-- 帧类型
-- 当前序号
-- 总帧数
-- 数据长度
-
-如果某一帧没有被识别到，解码会失败并提示类似：
+未指定 `-frames-dir` 时，程序会在当前工作目录创建带随机后缀的目录：
 
 ```text
-missing frame(s): 3, 4
+transfergo-encode-xxxxxxxx
+transfergo-decode-xxxxxxxx
 ```
 
-当前实现不做 FEC 或自动修复。录制质量足够好时，这种策略更简单，也更容易知道失败原因。
+- 默认情况下，自动目录会在命令结束时删除。
+- 使用 `-keep-frames` 时，自动目录会保留，并在日志中输出路径。
+- 显式指定的目录归调用方所有，无论是否传入 `-keep-frames` 都不会自动删除。
+- 显式目录可以由程序创建，但不能已经包含 `frame_*.png` 文件，以免新旧帧混合。
 
-## 建议使用方式
+## 加密与安全
 
-- 播放视频时尽量全屏。
-- 避免播放器控件遮挡二维码。
-- 手机拍摄时保持画面稳定、对焦清晰。
-- 默认 `3 fps` 会让每帧保持足够长的显示时间；如果调高 `-fps`，录制端也需要稳定捕获每一帧。
-- 如果视频经过二次压缩或平台转码，建议保持较低的 `-qr-version`，必要时继续降低 `-chunk-size`。
-- 如果只是在本机生成并直接解码视频，可以手动提高 `-chunk-size`；如果要手机拍屏录像，建议先使用默认值。
+设置 `-p` 后，TransferGo 使用以下参数：
 
-## 项目结构
+- PBKDF2-SHA256，迭代次数为 `200000`。
+- 随机盐长度为 `16` 字节。
+- AES 密钥长度为 `256` 位。
+- AES-GCM Nonce 长度为 `12` 字节。
+- 每个协议帧使用独立随机 Nonce。
+- 协议版本、加密标志、帧类型、帧序号、总帧数和文件盐会绑定到 AES-GCM 认证附加数据。
+
+加密清单中包含文件名、文件长度和 SHA-256 摘要。密码错误或加密内容被篡改时，解码会在认证阶段失败。
+
+安全注意事项：
+
+- 密码不会以明文写入视频，但通过 `-p` 传递的密码可能出现在 Shell 历史记录或进程列表中。
+- 密码安全性取决于密码强度。视频包含执行离线密码猜测所需的盐和密文，因此应使用足够长且不可预测的密码。
+- 未设置密码时，协议只通过最终长度和 SHA-256 检测意外损坏，不提供机密性或抗恶意篡改认证。
+- 显式传入 `-o` 时，程序认为输出路径由调用方负责；只有从外部视频清单读取的默认文件名会执行路径安全限制。
+- `-replace` 会允许替换目标文件，请在自动化脚本中谨慎使用。
+
+## 可靠性与限制
+
+### 丢帧策略
+
+TransferGo 当前不包含 FEC、纠删码或自动重传：
+
+- 完整且一致的重复帧会被忽略。
+- 同一序号出现不同内容时会拒绝还原。
+- 缺少任意协议帧时，整个解码过程失败。
+- 所有数据帧完成拼接后，还会校验文件长度和 SHA-256。
+
+如果视频会经过平台转码、裁剪、缩放或强压缩，建议降低 `-chunk-size`、保持较低 `-fps`，并提高录制清晰度。
+
+### 资源限制
+
+- 编码会把整个输入文件和协议载荷保存在内存中，不适合超大文件。
+- 解码会收集识别到的协议载荷，并在内存中拼接完整输出文件。
+- 单张输入图片的宽高不能超过 `16384` 像素。
+- 单张输入图片的像素总数不能超过 `67108864`。
+- 图片进入二维码识别前，最长边会缩小到不超过 `1000` 像素。
+- 当前实现推荐用于几十 MB 以内的文件；实际可用大小取决于内存、二维码参数、视频质量和录制环境。
+
+### 视频与二维码限制
+
+- 视频编码固定使用 `libx264` 和 `yuv420p`，因此宽高必须是偶数。
+- 二维码纠错等级固定为 L，以提高有效容量，但抗遮挡能力相对较弱。
+- 二进制载荷通过 ISO-8859-1 一一映射到二维码文本接口。
+- 当前协议版本为 `1`，其他版本会被拒绝。
+- 视频播放或录制时应避免播放器控件、黑边裁剪、自动旋转和明显的透视变形。
+
+## 常见问题
+
+### 找不到 ffmpeg
+
+错误信息通常包含：
 
 ```text
-.
-├── main.go              # 最外层入口
-└── core/
-    ├── app.go           # 子命令分发
-    ├── commands.go      # encode/decode CLI 参数和流程
-    ├── protocol.go      # 帧协议、manifest、AES-GCM 加密和还原
-    ├── qr.go            # 二维码 PNG 编码和解码
-    ├── video.go         # ffmpeg 调用、抽帧和帧目录处理
-    └── app_test.go      # 协议、二维码、加密和缺帧测试
+ffmpeg not found
 ```
+
+确认 ffmpeg 已安装并位于 `PATH`，或者通过 `-ffmpeg`、`FFMPEG_PATH` 指定完整路径。
+
+### ffmpeg 提示没有 libx264
+
+TransferGo 固定使用 `libx264`。请更换包含该编码器的 ffmpeg 构建版本。
+
+### 输出文件已经存在
+
+默认策略是拒绝覆盖。确认目标文件可以被替换后，重新执行命令并加入 `-replace`。
+
+### 没有识别到 TransferGo 二维码
+
+错误信息通常包含：
+
+```text
+no TransferGo QR payloads decoded
+```
+
+可以依次检查：
+
+1. 输入视频是否确实由 TransferGo 生成或录制。
+2. 二维码是否完整显示，且没有被播放器控件遮挡。
+3. 视频是否被过度压缩、裁剪或缩放。
+4. `-sample-fps` 是否过低。
+5. 是否需要使用 `-keep-frames` 检查抽取出的 PNG 图片。
+
+### 提示缺少协议帧
+
+错误信息通常包含：
+
+```text
+one or more transfer frames are missing
+```
+
+也可能在收到的载荷数量明显少于帧总数时显示：
+
+```text
+frame total 10 exceeds available payload count 9
+```
+
+提高 `-sample-fps` 可能帮助捕获持续时间较短的视频帧。如果原视频本身已经缺失或二维码不可识别，则需要重新生成或重新录制视频。
+
+### 密码校验失败
+
+错误信息通常包含：
+
+```text
+password check failed
+```
+
+确认解码密码与编码密码完全一致。该错误也可能表示加密清单已损坏。
+
+### 二维码尺寸过小
+
+如果 `-qr-size` 小于协议载荷实际需要的二维码矩阵，编码会直接失败。请增大 `-qr-size`，或者减小 `-chunk-size`。
 
 ## 测试
+
+运行全部测试：
 
 ```bash
 go test ./...
 ```
 
-完整视频链路可以这样测试：
+单元测试不会调用真实 ffmpeg，也不会访问网络。所有测试图片、输出文件和帧目录都使用 Go 测试框架提供的 `t.TempDir`，测试完成后会自动清理，不会在仓库目录留下明显文件。
+
+运行竞态检测和静态检查：
+
+```bash
+go test -race ./...
+go vet ./...
+```
+
+执行完整视频链路测试：
 
 ```bash
 ./transfergo encode \
-  -i files/smoke-input.bin \
-  -o files/smoke-output.mp4 \
-  -p smoke-pass \
-  -ffmpeg /path/to/ffmpeg
-
-./transfergo decode \
-  -i files/smoke-output.mp4 \
-  -o files/smoke-restored.bin \
-  -p smoke-pass \
+  -i files/input.bin \
+  -o files/smoke.mp4 \
+  -p "smoke-password" \
   -ffmpeg /path/to/ffmpeg \
   -replace
 
-cmp files/smoke-input.bin files/smoke-restored.bin
+./transfergo decode \
+  -i files/smoke.mp4 \
+  -o files/restored.bin \
+  -p "smoke-password" \
+  -ffmpeg /path/to/ffmpeg \
+  -replace
+
+cmp files/input.bin files/restored.bin
+```
+
+## 项目结构
+
+```text
+.
+├── main.go                 # 命令分发、编码与解码主流程
+├── main_test.go            # 输出路径和文件替换策略测试
+├── core/
+│   ├── commands.go         # 命令参数、帮助和进度日志
+│   ├── commands_test.go    # 参数边界和帮助完整性测试
+│   ├── protocol.go         # 协议帧、清单、加密和文件还原
+│   ├── protocol_test.go    # 协议往返和异常帧测试
+│   ├── qr.go               # 二维码图片编码与解码
+│   ├── qr_test.go          # 二维码尺寸保护测试
+│   ├── utils.go            # 日志、错误和字节工具
+│   ├── utils_test.go       # 错误包装、字节拼接和帧率格式测试
+│   ├── video.go            # ffmpeg 调用和帧目录管理
+│   └── video_test.go       # 临时帧目录测试
+├── go.mod
+├── go.sum
+└── README.md
 ```
