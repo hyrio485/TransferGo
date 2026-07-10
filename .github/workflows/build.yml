@@ -2,13 +2,8 @@ name: 多平台构建
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
-  #  pull_request:
-  #    branches:
-  #      - main
   workflow_dispatch:
 
 permissions:
@@ -84,7 +79,7 @@ jobs:
           go build \
             -trimpath \
             -ldflags="-s -w" \
-            -o "dist/transfergo-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
+            -o "dist/transfergo${{ matrix.suffix }}" \
             .
 
       - name: 打包产物
@@ -92,7 +87,7 @@ jobs:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
         run: |
-          binary="transfergo-${GOOS}-${GOARCH}${{ matrix.suffix }}"
+          binary="transfergo${{ matrix.suffix }}"
           archive="transfergo-${GOOS}-${GOARCH}.${{ matrix.archive }}"
 
           if [ "${{ matrix.archive }}" = "zip" ]
