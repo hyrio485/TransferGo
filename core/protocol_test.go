@@ -76,6 +76,21 @@ func TestProtocolRejectsMissingFrame(t *testing.T) {
 	}
 }
 
+// TestProtocolRejectsMissingManifest 验证缺少零号清单帧时返回明确错误。
+// 前置条件：生成包含清单帧和多个数据帧的有效载荷集合。
+// 执行方式：删除零号清单帧后调用 RestoreFile。
+// 期望结果：还原失败，并明确报告 missing manifest frame。
+func TestProtocolRejectsMissingManifest(t *testing.T) {
+	payloads, err := NewProtocolContext().EncodeFile([]byte("manifest must be present"), "input.bin", "", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = RestoreFile(payloads[1:], "")
+	if err == nil || !strings.Contains(err.Error(), "missing manifest frame") {
+		t.Fatalf("RestoreFile() error = %v", err)
+	}
+}
+
 // TestProtocolRejectsConflictingDuplicate 验证同序号帧的冲突检测。
 // 前置条件：生成有效明文协议帧，并复制一个数据帧。
 // 执行方式：修改复制帧的帧体后，把它作为同序号重复帧加入载荷集合。

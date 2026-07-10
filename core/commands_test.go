@@ -116,6 +116,14 @@ func TestParseEncodeOptionsRejectsInvalidValues(t *testing.T) {
 // 期望结果：有效参数完整保留，无效参数全部返回错误。
 func TestParseDecodeOptions(t *testing.T) {
 	ctx := NewCommandContext()
+	defaults, err := ctx.ParseDecodeOptions([]string{"-i", "input.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaults.Parallel {
+		t.Fatal("parallel decoding is not enabled by default")
+	}
+
 	got, err := ctx.ParseDecodeOptions([]string{
 		"-in", "input.mp4",
 		"-out", "output.bin",
@@ -123,6 +131,8 @@ func TestParseDecodeOptions(t *testing.T) {
 		"-ffmpeg", "/path/to/ffmpeg",
 		"-frames-dir", "frames",
 		"-sample-fps", "12.5",
+		"-max-frame-size", "3072",
+		"-parallel=false",
 		"-replace",
 		"-keep-frames",
 	})
@@ -130,8 +140,8 @@ func TestParseDecodeOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Input != "input.mp4" || got.Output != "output.bin" || got.Password != "secret" ||
-		got.Ffmpeg != "/path/to/ffmpeg" || got.FramesDir != "frames" || got.SampleFPS != 12.5 ||
-		!got.Replace || !got.Keep {
+		got.Ffmpeg != "/path/to/ffmpeg" || got.FramesDir != "frames" || got.SampleFPS != 12.5 || got.MaxFrameSize != 3072 ||
+		got.Parallel || !got.Replace || !got.Keep {
 		t.Fatalf("unexpected decode options: %+v", got)
 	}
 
@@ -144,6 +154,8 @@ func TestParseDecodeOptions(t *testing.T) {
 		{name: "zero sample FPS", args: []string{"-i", "input", "-sample-fps", "0"}},
 		{name: "NaN sample FPS", args: []string{"-i", "input", "-sample-fps", "NaN"}},
 		{name: "infinite sample FPS", args: []string{"-i", "input", "-sample-fps", "+Inf"}},
+		{name: "zero max frame size", args: []string{"-i", "input", "-max-frame-size", "0"}},
+		{name: "large max frame size", args: []string{"-i", "input", "-max-frame-size", "16385"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -173,7 +185,7 @@ func TestUsageListsEveryCommandOption(t *testing.T) {
 	}
 	decodeOptions := []string{
 		"-i、-in", "-o、-out", "-p、-password", "-ffmpeg", "-frames-dir",
-		"-sample-fps", "-replace", "-keep-frames",
+		"-sample-fps", "-max-frame-size", "-parallel", "-replace", "-keep-frames",
 	}
 
 	for _, option := range encodeOptions {

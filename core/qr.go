@@ -22,11 +22,11 @@ import (
 )
 
 const (
-	characterSet         = "ISO-8859-1"
-	errorCorrectionLevel = qrdecoder.ErrorCorrectionLevel_L
-	maxDecodeFrameSize   = 1000
-	maxImageDimension    = 16_384
-	maxImagePixels       = 64 * 1024 * 1024
+	characterSet           = "ISO-8859-1"
+	errorCorrectionLevel   = qrdecoder.ErrorCorrectionLevel_L
+	defaultDecodeFrameSize = 2048
+	maxImageDimension      = 16_384
+	maxImagePixels         = 64 * 1024 * 1024
 )
 
 // region Encode
@@ -127,9 +127,12 @@ func drawQRCode(img *image.Gray, content string, index int, qrSize int, cols int
 
 // region Decode
 
-// DecodeSinglePngToMultiByteArrays 解码一张图片中的所有二维码，并恢复各自的原始字节数组。
+// DecodeSinglePngToMultiByteArraysWithMaxFrameSize 在指定最长边限制下解码图片中的所有二维码。
 // 找不到二维码属于正常情况，此时返回空切片而不是错误。
-func DecodeSinglePngToMultiByteArrays(path string) ([][]byte, error) {
+func DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path string, maxFrameSize int) ([][]byte, error) {
+	if maxFrameSize <= 0 || maxFrameSize > maxImageDimension {
+		return nil, fmt.Errorf("max frame size must be between 1 and %d", maxImageDimension)
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, E("open image", err)
@@ -152,7 +155,7 @@ func DecodeSinglePngToMultiByteArrays(path string) ([][]byte, error) {
 		return nil, E("decode image", err)
 	}
 
-	img = resizeImageWithinLimit(img)
+	img = resizeImageWithinLimit(img, maxFrameSize)
 
 	bitmap, err := newQRCodeBinaryBitmap(img)
 	if err != nil {
@@ -205,23 +208,23 @@ func qrDecodeHints() map[gozxing.DecodeHintType]any {
 }
 
 // resizeImageWithinLimit 在保持宽高比的前提下，把图片最长边缩小到解码限制以内。
-func resizeImageWithinLimit(img image.Image) image.Image {
+func resizeImageWithinLimit(img image.Image, maxFrameSize int) image.Image {
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-	if width <= maxDecodeFrameSize && height <= maxDecodeFrameSize {
+	if width <= maxFrameSize && height <= maxFrameSize {
 		return img
 	}
 
 	newWidth := width
 	newHeight := height
-	if width > maxDecodeFrameSize {
-		newWidth = maxDecodeFrameSize
-		newHeight = height * maxDecodeFrameSize / width
+	if width > maxFrameSize {
+		newWidth = maxFrameSize
+		newHeight = height * maxFrameSize / width
 	}
-	if newHeight > maxDecodeFrameSize {
-		newWidth = width * maxDecodeFrameSize / height
-		newHeight = maxDecodeFrameSize
+	if newHeight > maxFrameSize {
+		newWidth = width * maxFrameSize / height
+		newHeight = maxFrameSize
 	}
 	if newWidth == width && newHeight == height {
 		return img

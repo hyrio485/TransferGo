@@ -52,6 +52,8 @@ decode 参数：
   -ffmpeg <路径>           ffmpeg 可执行文件路径，默认依次使用 FFMPEG_PATH 和 PATH
   -frames-dir <目录>       抽取的 PNG 帧目录，默认创建随机临时目录
   -sample-fps <帧率>       解码抽帧率，默认 9
+  -max-frame-size <像素>   解码帧最长边，范围为 1 至 16384，默认 2048
+  -parallel <布尔值>       是否并行解码 PNG，默认 true
   -replace                 允许替换已有输出文件，默认关闭
   -keep-frames             保留抽取的 PNG 帧，默认关闭
 `
@@ -89,14 +91,16 @@ type EncodeOptions struct {
 
 // DecodeOptions 描述 decode 命令支持的全部参数。
 type DecodeOptions struct {
-	Input     string
-	Output    string
-	Password  string
-	Ffmpeg    string
-	FramesDir string
-	SampleFPS float64
-	Replace   bool
-	Keep      bool
+	Input        string
+	Output       string
+	Password     string
+	Ffmpeg       string
+	FramesDir    string
+	SampleFPS    float64
+	MaxFrameSize int
+	Parallel     bool
+	Replace      bool
+	Keep         bool
 }
 
 // ParseEncodeOptions 解析并校验 encode 命令参数。
@@ -195,7 +199,9 @@ func (ctx CommandContext) ParseDecodeOptions(args []string) (DecodeOptions, erro
 	fs.SetOutput(io.Discard)
 
 	opt := DecodeOptions{
-		SampleFPS: defaultSampleFPS,
+		SampleFPS:    defaultSampleFPS,
+		MaxFrameSize: defaultDecodeFrameSize,
+		Parallel:     true,
 	}
 	fs.StringVar(&opt.Input, "i", opt.Input, "input video path")
 	fs.StringVar(&opt.Input, "in", opt.Input, "input video path (alias for -i)")
@@ -206,6 +212,8 @@ func (ctx CommandContext) ParseDecodeOptions(args []string) (DecodeOptions, erro
 	fs.StringVar(&opt.Ffmpeg, "ffmpeg", opt.Ffmpeg, "ffmpeg executable path; falls back to FFMPEG_PATH, then PATH")
 	fs.StringVar(&opt.FramesDir, "frames-dir", opt.FramesDir, "directory for extracted PNG frames")
 	fs.Float64Var(&opt.SampleFPS, "sample-fps", opt.SampleFPS, "QR sampling rate while decoding")
+	fs.IntVar(&opt.MaxFrameSize, "max-frame-size", opt.MaxFrameSize, "maximum decoded frame edge in pixels")
+	fs.BoolVar(&opt.Parallel, "parallel", opt.Parallel, "decode PNG frames in parallel")
 	fs.BoolVar(&opt.Replace, "replace", opt.Replace, "replace the output file if it exists")
 	fs.BoolVar(&opt.Keep, "keep-frames", opt.Keep, "keep extracted PNG frames")
 
@@ -220,6 +228,9 @@ func (ctx CommandContext) ParseDecodeOptions(args []string) (DecodeOptions, erro
 	}
 	if opt.SampleFPS <= 0 || math.IsNaN(opt.SampleFPS) || math.IsInf(opt.SampleFPS, 0) {
 		return DecodeOptions{}, errors.New("-sample-fps must be greater than 0")
+	}
+	if opt.MaxFrameSize <= 0 || opt.MaxFrameSize > maxImageDimension {
+		return DecodeOptions{}, fmt.Errorf("-max-frame-size must be between 1 and %d", maxImageDimension)
 	}
 	return opt, nil
 }

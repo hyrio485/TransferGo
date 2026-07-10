@@ -257,7 +257,9 @@ func RestoreFile(payloads [][]byte, password string) (Manifest, []byte, error) {
 		if err != nil {
 			return Manifest{}, nil, E("parse frame", err)
 		}
-		if uint64(frame.total) > uint64(len(payloads)) {
+		// 清单存在时可以立即拒绝不可能完整的载荷集合；清单缺失时继续收集，
+		// 让 restoreFromFrames 返回更明确的 missing manifest frame。
+		if frame.index == 0 && uint64(frame.total) > uint64(len(payloads)) {
 			return Manifest{}, nil, fmt.Errorf("frame total %d exceeds available payload count %d", frame.total, len(payloads))
 		}
 		if total == 0 {
@@ -361,9 +363,6 @@ func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password s
 	if total == 0 {
 		return Manifest{}, nil, errors.New("no transfer frames found")
 	}
-	if uint64(total) > uint64(len(frames)) {
-		return Manifest{}, nil, errors.New("one or more transfer frames are missing")
-	}
 
 	manifestFrame, ok := frames[0]
 	if !ok {
@@ -371,6 +370,9 @@ func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password s
 	}
 	if manifestFrame.kind != frameKindManifest {
 		return Manifest{}, nil, errors.New("frame 0 is not a manifest")
+	}
+	if uint64(total) > uint64(len(frames)) {
+		return Manifest{}, nil, errors.New("one or more transfer frames are missing")
 	}
 	encrypted := manifestFrame.flags&flagEncrypted != 0
 

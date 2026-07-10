@@ -1,10 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -99,17 +101,21 @@ func (app appContext) runEncode(args []string) error {
 		}
 	}
 
+	core.LogI("encode configuration: input=%q, output=%q, fps=%g, image=%dx%d, grid=%dx%d, QR size=%d, chunk size=%d bytes, CRF=%d, encrypted=%t, replace=%t\n",
+		opt.Input, opt.Output, opt.FPS, opt.ImageWidth, opt.ImageHeight, opt.Rows, opt.Cols, opt.QRSize, opt.ChunkSize, opt.CRF, opt.Password != "", opt.Replace)
 	core.LogI("reading input file: %s\n", opt.Input)
 	input, err := os.ReadFile(opt.Input)
 	if err != nil {
 		return core.E("read input file", err)
 	}
+	core.LogI("input file loaded: %d bytes\n", len(input))
 
 	core.LogI("building protocol frames...\n")
 	payloads, err := app.protocol.EncodeFile(input, filepath.Base(opt.Input), opt.Password, opt.ChunkSize)
 	if err != nil {
 		return core.E("encode file payloads", err)
 	}
+	core.LogI("protocol prepared: %d QR codes, %d video frames\n", len(payloads), renderedFrameCount(len(payloads), opt.Rows, opt.Cols))
 
 	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.FramesDir, "transfergo-encode-", opt.Keep)
 	if err != nil {
@@ -121,10 +127,14 @@ func (app appContext) runEncode(args []string) error {
 	if err := app.writePayloadImages(payloads, framesDir, opt); err != nil {
 		return core.E("write QR images", err)
 	}
+	core.LogI("QR images rendered: %d PNG files in %s\n", renderedFrameCount(len(payloads), opt.Rows, opt.Cols), framesDir)
 
 	core.LogI("encoding video with ffmpeg...\n")
 	if err := app.video.EncodeVideo(opt.Ffmpeg, framesDir, opt.Output, opt.FPS, opt.CRF, opt.Replace); err != nil {
 		return core.E("encode video with ffmpeg", err)
+	}
+	if info, statErr := os.Stat(opt.Output); statErr == nil {
+		core.LogI("video encoded: %d bytes\n", info.Size())
 	}
 
 	core.LogI("encoded %s -> %s\n", opt.Input, opt.Output)
@@ -183,6 +193,12 @@ func (app appContext) runDecode(args []string) error {
 	if err != nil {
 		return withUsage(core.E("parse decode options", err))
 	}
+	requestedOutput := opt.Output
+	if requestedOutput == "" {
+		requestedOutput = "<manifest file name>"
+	}
+	core.LogI("decode configuration: input=%q, output=%q, sample fps=%g, max frame size=%d, parallel=%t, password supplied=%t, replace=%t\n",
+		opt.Input, requestedOutput, opt.SampleFPS, opt.MaxFrameSize, opt.Parallel, opt.Password != "", opt.Replace)
 
 	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.FramesDir, "transfergo-decode-", opt.Keep)
 	if err != nil {
@@ -202,9 +218,13 @@ func (app appContext) runDecode(args []string) error {
 	if len(paths) == 0 {
 		return errors.New("no extracted image(s) found")
 	}
+	core.LogI("video frames extracted: %d PNG files in %s\n", len(paths), framesDir)
 
-	core.LogI("decoding QR images...\n")
-	payloads, unreadable, err := collectPayloadsFromImages(paths, app.commands.NewProgressPrinter("decoded QR images"))
+	workers := decodeWorkerCount(opt.Parallel, len(paths))
+	core.LogI("decoding QR images: parallel=%t, workers=%d, max frame size=%d\n", opt.Parallel, workers, opt.MaxFrameSize)
+	payloads, stats, err := collectPayloadsFromImages(paths, opt.MaxFrameSize, opt.Parallel, app.commands.NewProgressPrinter("decoded QR images"))
+	core.LogI("QR decode summary: images=%d, with QR=%d, without QR=%d, unreadable=%d, QR codes=%d, unique=%d, duplicates=%d\n",
+		stats.TotalImages, stats.ImagesWithPayloads, stats.EmptyImages, stats.UnreadableImages, stats.PayloadCount, stats.UniquePayloadCount, stats.DuplicatePayloadCount)
 	if err != nil {
 		return core.E("collect QR payloads from images", err)
 	}
@@ -214,6 +234,8 @@ func (app appContext) runDecode(args []string) error {
 	if err != nil {
 		return core.E("restore file bytes", err)
 	}
+	digest := sha256.Sum256(output)
+	core.LogI("file restored and verified: manifest name=%q, size=%d bytes, SHA-256=%x\n", manifest.FileName(), len(output), digest)
 
 	outputPath, err := decodedOutputPath(opt.Output, manifest.FileName())
 	if err != nil {
@@ -224,7 +246,8 @@ func (app appContext) runDecode(args []string) error {
 	}
 
 	core.LogI("decoded %s -> %s\n", opt.Input, outputPath)
-	core.LogI("payloads: %d, extracted images: %d, unreadable images: %d\n", len(payloads), len(paths), unreadable)
+	core.LogI("decode completed: extracted images=%d, QR codes=%d, unique QR codes=%d, restored bytes=%d\n",
+		stats.TotalImages, stats.PayloadCount, stats.UniquePayloadCount, len(output))
 	if opt.Keep {
 		core.LogI("frames kept in %s\n", framesDir)
 	}
@@ -297,27 +320,128 @@ func writeOutputFile(path string, data []byte, replace bool) error {
 	return os.Rename(tempPath, path)
 }
 
-// collectPayloadsFromImages 汇总所有图片中的二维码载荷，并统计无法解码的图片数量。
+// payloadCollectionStats 保存图片和二维码识别阶段的汇总统计。
+type payloadCollectionStats struct {
+	TotalImages           int
+	ImagesWithPayloads    int
+	EmptyImages           int
+	UnreadableImages      int
+	PayloadCount          int
+	UniquePayloadCount    int
+	DuplicatePayloadCount int
+}
+
+// collectPayloadsFromImages 汇总所有图片中的二维码载荷，并统计识别结果。
 // 单张图片失败不会立即终止，因为其他抽帧图片可能包含同一批协议载荷。
-func collectPayloadsFromImages(paths []string, progress func(done int, total int)) ([][]byte, int, error) {
+func collectPayloadsFromImages(paths []string, maxFrameSize int, parallel bool, progress func(done int, total int)) ([][]byte, payloadCollectionStats, error) {
+	if !parallel || len(paths) < 2 {
+		return collectPayloadsSequentially(paths, maxFrameSize, progress)
+	}
+
+	type decodeJob struct {
+		index int
+		path  string
+	}
+	type decodeResult struct {
+		index    int
+		payloads [][]byte
+		err      error
+	}
+
+	workerCount := decodeWorkerCount(true, len(paths))
+	jobs := make(chan decodeJob, len(paths))
+	results := make(chan decodeResult, workerCount)
+	for range workerCount {
+		go func() {
+			for job := range jobs {
+				decoded, err := core.DecodeSinglePngToMultiByteArraysWithMaxFrameSize(job.path, maxFrameSize)
+				results <- decodeResult{index: job.index, payloads: decoded, err: err}
+			}
+		}()
+	}
+	for index, path := range paths {
+		jobs <- decodeJob{index: index, path: path}
+	}
+	close(jobs)
+
+	decodedByIndex := make([][][]byte, len(paths))
+	stats := payloadCollectionStats{TotalImages: len(paths)}
+	for done := 1; done <= len(paths); done++ {
+		result := <-results
+		if result.err != nil {
+			stats.UnreadableImages++
+		} else {
+			decodedByIndex[result.index] = result.payloads
+			if len(result.payloads) == 0 {
+				stats.EmptyImages++
+			} else {
+				stats.ImagesWithPayloads++
+			}
+		}
+		if progress != nil {
+			progress(done, len(paths))
+		}
+	}
+
 	var payloads [][]byte
-	unreadable := 0
+	for _, decoded := range decodedByIndex {
+		payloads = append(payloads, decoded...)
+	}
+	completePayloadStats(&stats, payloads)
+	if len(payloads) == 0 {
+		return nil, stats, errors.New("no TransferGo QR payloads decoded")
+	}
+	return payloads, stats, nil
+}
+
+// collectPayloadsSequentially 按图片顺序串行解码，供关闭并行模式时使用。
+func collectPayloadsSequentially(paths []string, maxFrameSize int, progress func(done int, total int)) ([][]byte, payloadCollectionStats, error) {
+	var payloads [][]byte
+	stats := payloadCollectionStats{TotalImages: len(paths)}
 
 	for i, path := range paths {
-		decodedPayloads, err := core.DecodeSinglePngToMultiByteArrays(path)
+		decodedPayloads, err := core.DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, maxFrameSize)
 		if err != nil {
-			unreadable++
+			stats.UnreadableImages++
 		} else {
 			payloads = append(payloads, decodedPayloads...)
+			if len(decodedPayloads) == 0 {
+				stats.EmptyImages++
+			} else {
+				stats.ImagesWithPayloads++
+			}
 		}
 		if progress != nil {
 			progress(i+1, len(paths))
 		}
 	}
+	completePayloadStats(&stats, payloads)
 	if len(payloads) == 0 {
-		return nil, unreadable, errors.New("no TransferGo QR payloads decoded")
+		return nil, stats, errors.New("no TransferGo QR payloads decoded")
 	}
-	return payloads, unreadable, nil
+	return payloads, stats, nil
+}
+
+// decodeWorkerCount 根据并行开关、逻辑处理器数量和任务数量确定工作协程数。
+func decodeWorkerCount(parallel bool, taskCount int) int {
+	if taskCount <= 0 {
+		return 0
+	}
+	if !parallel {
+		return 1
+	}
+	return min(runtime.GOMAXPROCS(0), taskCount)
+}
+
+// completePayloadStats 统计二维码总数、唯一数和重复数。
+func completePayloadStats(stats *payloadCollectionStats, payloads [][]byte) {
+	unique := make(map[string]struct{}, len(payloads))
+	for _, payload := range payloads {
+		unique[string(payload)] = struct{}{}
+	}
+	stats.PayloadCount = len(payloads)
+	stats.UniquePayloadCount = len(unique)
+	stats.DuplicatePayloadCount = stats.PayloadCount - stats.UniquePayloadCount
 }
 
 // sortedFramePaths 返回目录内按文件名排序的视频帧路径。

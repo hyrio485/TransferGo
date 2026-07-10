@@ -26,7 +26,7 @@ func TestQRCodeBinaryRoundTrip(t *testing.T) {
 	if err := EncodeMultiByteArraysToSinglePng([][]byte{input}, path, 300, 1, 1, 340, 340); err != nil {
 		t.Fatal(err)
 	}
-	payloads, err := DecodeSinglePngToMultiByteArrays(path)
+	payloads, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, defaultDecodeFrameSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestQRCodeMultiplePayloadsRoundTrip(t *testing.T) {
 	if err := EncodeMultiByteArraysToSinglePng(inputs, path, 200, 2, 2, 440, 440); err != nil {
 		t.Fatal(err)
 	}
-	payloads, err := DecodeSinglePngToMultiByteArrays(path)
+	payloads, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, defaultDecodeFrameSize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,16 +122,19 @@ func TestEncodeRejectsQRCodeCropping(t *testing.T) {
 // 执行方式：分别解码不存在的路径和无效图片文件。
 // 期望结果：两次调用都返回错误，不产生其他文件。
 func TestDecodeRejectsInvalidImage(t *testing.T) {
+	if _, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize("missing.png", 0); err == nil {
+		t.Fatal("DecodeSinglePngToMultiByteArraysWithMaxFrameSize accepted zero max frame size")
+	}
 	dir := t.TempDir()
-	if _, err := DecodeSinglePngToMultiByteArrays(filepath.Join(dir, "missing.png")); err == nil {
-		t.Fatal("DecodeSinglePngToMultiByteArrays accepted missing file")
+	if _, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(filepath.Join(dir, "missing.png"), defaultDecodeFrameSize); err == nil {
+		t.Fatal("DecodeSinglePngToMultiByteArraysWithMaxFrameSize accepted missing file")
 	}
 	invalidPath := filepath.Join(dir, "invalid.png")
 	if err := os.WriteFile(invalidPath, []byte("not an image"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeSinglePngToMultiByteArrays(invalidPath); err == nil {
-		t.Fatal("DecodeSinglePngToMultiByteArrays accepted invalid image")
+	if _, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(invalidPath, defaultDecodeFrameSize); err == nil {
+		t.Fatal("DecodeSinglePngToMultiByteArraysWithMaxFrameSize accepted invalid image")
 	}
 }
 
@@ -140,16 +143,16 @@ func TestDecodeRejectsInvalidImage(t *testing.T) {
 // 执行方式：分别调用 resizeImageWithinLimit。
 // 期望结果：大图最长边缩小到限制值并保持比例，小图直接复用原对象。
 func TestResizeImageWithinLimit(t *testing.T) {
-	landscape := image.NewRGBA(image.Rect(0, 0, 2000, 1000))
-	if got := resizeImageWithinLimit(landscape).Bounds(); got.Dx() != 1000 || got.Dy() != 500 {
+	landscape := image.NewRGBA(image.Rect(0, 0, 4096, 2048))
+	if got := resizeImageWithinLimit(landscape, 2048).Bounds(); got.Dx() != 2048 || got.Dy() != 1024 {
 		t.Fatalf("landscape bounds = %v", got)
 	}
-	portrait := image.NewRGBA(image.Rect(0, 0, 1000, 2000))
-	if got := resizeImageWithinLimit(portrait).Bounds(); got.Dx() != 500 || got.Dy() != 1000 {
+	portrait := image.NewRGBA(image.Rect(0, 0, 2048, 4096))
+	if got := resizeImageWithinLimit(portrait, 2048).Bounds(); got.Dx() != 1024 || got.Dy() != 2048 {
 		t.Fatalf("portrait bounds = %v", got)
 	}
-	small := image.NewRGBA(image.Rect(0, 0, 800, 600))
-	if got := resizeImageWithinLimit(small); got != small {
+	small := image.NewRGBA(image.Rect(0, 0, 1920, 1080))
+	if got := resizeImageWithinLimit(small, 2048); got != small {
 		t.Fatal("small image was unnecessarily replaced")
 	}
 }

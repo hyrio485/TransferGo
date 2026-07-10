@@ -197,26 +197,40 @@ func TestCollectPayloadsFromImages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	progressDone := 0
-	progressTotal := 0
-	payloads, unreadable, err := collectPayloadsFromImages(
-		[]string{validPath, invalidPath},
-		func(done int, total int) {
-			progressDone = done
-			progressTotal = total
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(payloads) != 1 || !bytes.Equal(payloads[0], wantPayload) {
-		t.Fatalf("payloads = %q", payloads)
-	}
-	if unreadable != 1 {
-		t.Fatalf("unreadable = %d, want 1", unreadable)
-	}
-	if progressDone != 2 || progressTotal != 2 {
-		t.Fatalf("progress = %d/%d, want 2/2", progressDone, progressTotal)
+	for name, parallel := range map[string]bool{"serial": false, "parallel": true} {
+		t.Run(name, func(t *testing.T) {
+			progressDone := 0
+			progressTotal := 0
+			payloads, stats, err := collectPayloadsFromImages(
+				[]string{validPath, validPath, invalidPath},
+				2048,
+				parallel,
+				func(done int, total int) {
+					progressDone = done
+					progressTotal = total
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(payloads) != 2 || !bytes.Equal(payloads[0], wantPayload) || !bytes.Equal(payloads[1], wantPayload) {
+				t.Fatalf("payloads = %q", payloads)
+			}
+			wantStats := payloadCollectionStats{
+				TotalImages:           3,
+				ImagesWithPayloads:    2,
+				UnreadableImages:      1,
+				PayloadCount:          2,
+				UniquePayloadCount:    1,
+				DuplicatePayloadCount: 1,
+			}
+			if stats != wantStats {
+				t.Fatalf("stats = %+v, want %+v", stats, wantStats)
+			}
+			if progressDone != 3 || progressTotal != 3 {
+				t.Fatalf("progress = %d/%d, want 3/3", progressDone, progressTotal)
+			}
+		})
 	}
 }
 
