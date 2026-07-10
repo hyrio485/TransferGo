@@ -5,6 +5,7 @@
 *.ipr
 
 /transfergo
+/dist/
 /files/
 /test-cmds.txt
 /.gocache/

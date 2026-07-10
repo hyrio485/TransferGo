@@ -22,6 +22,26 @@ func main() {
 	}
 }
 
+// Run 根据首个命令行参数分发 encode、decode 或帮助命令。
+func (app appContext) Run(args []string) error {
+	if len(args) == 0 {
+		app.commands.PrintUsage()
+		return nil
+	}
+
+	switch args[0] {
+	case "encode":
+		return app.runEncode(args[1:])
+	case "decode":
+		return app.runDecode(args[1:])
+	case "help", "-h", "--help":
+		app.commands.PrintUsage()
+		return nil
+	default:
+		return withUsage(fmt.Errorf("unknown command %q", args[0]))
+	}
+}
+
 type appContext struct {
 	commands core.CommandContext
 	protocol core.ProtocolContext
@@ -60,25 +80,6 @@ func newAppContext() appContext {
 		commands: core.NewCommandContext(),
 		protocol: core.NewProtocolContext(),
 		video:    core.NewVideoContext(),
-	}
-}
-
-// Run 根据首个命令行参数分发 encode、decode 或帮助命令。
-func (app appContext) Run(args []string) error {
-	if len(args) == 0 {
-		return withUsage(errors.New("missing command"))
-	}
-
-	switch args[0] {
-	case "encode":
-		return app.runEncode(args[1:])
-	case "decode":
-		return app.runDecode(args[1:])
-	case "help", "-h", "--help":
-		app.commands.PrintUsage()
-		return nil
-	default:
-		return withUsage(fmt.Errorf("unknown command %q", args[0]))
 	}
 }
 

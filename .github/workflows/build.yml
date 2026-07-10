@@ -1,0 +1,138 @@
+name: 多平台构建
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  #  pull_request:
+  #    branches:
+  #      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 运行测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 执行测试
+        run: go test ./...
+
+  build:
+    name: 构建 ${{ matrix.os }}/${{ matrix.arch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            suffix: ""
+            archive: tar.gz
+          - os: linux
+            arch: arm64
+            suffix: ""
+            archive: tar.gz
+          - os: darwin
+            arch: amd64
+            suffix: ""
+            archive: tar.gz
+          - os: darwin
+            arch: arm64
+            suffix: ""
+            archive: tar.gz
+          - os: windows
+            arch: amd64
+            suffix: ".exe"
+            archive: zip
+          - os: windows
+            arch: arm64
+            suffix: ".exe"
+            archive: zip
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 构建可执行文件
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist package
+          go build \
+            -trimpath \
+            -ldflags="-s -w" \
+            -o "dist/transfergo-${GOOS}-${GOARCH}${{ matrix.suffix }}" \
+            .
+
+      - name: 打包产物
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          binary="transfergo-${GOOS}-${GOARCH}${{ matrix.suffix }}"
+          archive="transfergo-${GOOS}-${GOARCH}.${{ matrix.archive }}"
+
+          if [ "${{ matrix.archive }}" = "zip" ]
+          then
+            zip -j "package/${archive}" "dist/${binary}"
+          else
+            tar -C dist -czf "package/${archive}" "${binary}"
+          fi
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: transfergo-${{ matrix.os }}-${{ matrix.arch }}
+          path: package/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: 发布 GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载全部构建产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: transfergo-*
+          path: release
+          merge-multiple: true
+
+      - name: 创建或更新 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1
+          then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --generate-notes --verify-tag
+          fi

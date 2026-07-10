@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,15 +17,14 @@ import (
 
 // TestRunClassifiesUsageErrors 验证参数错误与运行错误的分类。
 // 前置条件：只初始化命令上下文，不需要输入文件、二维码或 ffmpeg。
-// 执行方式：分别传入缺少命令、未知命令、encode 缺参、decode 缺参和普通运行错误。
-// 期望结果：四种参数错误都要求打印用法，普通运行错误不要求打印用法，底层错误链保持可识别。
+// 执行方式：分别传入未知命令、encode 缺参、decode 缺参和普通运行错误。
+// 期望结果：三种参数错误都要求打印用法，普通运行错误不要求打印用法，底层错误链保持可识别。
 func TestRunClassifiesUsageErrors(t *testing.T) {
 	app := appContext{commands: core.NewCommandContext()}
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{name: "missing command", args: nil},
 		{name: "unknown command", args: []string{"unknown"}},
 		{name: "encode missing options", args: []string{"encode"}},
 		{name: "decode missing options", args: []string{"decode"}},
@@ -45,6 +45,35 @@ func TestRunClassifiesUsageErrors(t *testing.T) {
 	wrapped := withUsage(runtimeErr)
 	if !errors.Is(wrapped, runtimeErr) {
 		t.Fatal("usage error does not preserve its cause")
+	}
+}
+
+// TestRunWithoutCommandPrintsUsage 验证未传命令时直接打印用法并正常返回。
+func TestRunWithoutCommandPrintsUsage(t *testing.T) {
+	app := appContext{commands: core.NewCommandContext()}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = writer
+	t.Cleanup(func() {
+		os.Stdout = originalStdout
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+
+	runErr := app.Run(nil)
+	_ = writer.Close()
+	output, readErr := io.ReadAll(reader)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if runErr != nil {
+		t.Fatalf("Run(nil) error = %v, want nil", runErr)
+	}
+	if !bytes.Contains(output, []byte("用法：")) {
+		t.Fatalf("Run(nil) output = %q, want usage", output)
 	}
 }
 
