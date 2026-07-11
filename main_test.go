@@ -164,12 +164,13 @@ func TestWritePayloadImagesParallelModes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			opt := core.EncodeOptions{
-				QRSize:      240,
-				Rows:        1,
-				Cols:        1,
-				ImageWidth:  346,
-				ImageHeight: 346,
-				Parallel:    parallel,
+				QRSize:            240,
+				QRErrorCorrection: "L",
+				Rows:              1,
+				Cols:              1,
+				ImageWidth:        346,
+				ImageHeight:       346,
+				Parallel:          parallel,
 			}
 			if err := app.writePayloadImages(payloads, dir, opt); err != nil {
 				t.Fatal(err)
@@ -224,6 +225,22 @@ func TestRenderedFrameCount(t *testing.T) {
 	}
 }
 
+// TestEffectiveTransferRate 验证等效传输速率按原始文件大小和视频播放时长计算。
+func TestEffectiveTransferRate(t *testing.T) {
+	if got := effectiveTransferRate(10_240, 20, 4); got != 2 {
+		t.Fatalf("effectiveTransferRate() = %v, want 2", got)
+	}
+	for _, got := range []float64{
+		effectiveTransferRate(0, 20, 4),
+		effectiveTransferRate(10_000, 0, 4),
+		effectiveTransferRate(10_000, 20, 0),
+	} {
+		if got != 0 {
+			t.Fatalf("effectiveTransferRate() = %v, want 0", got)
+		}
+	}
+}
+
 // TestCollectPayloadsFromImages 验证二维码图片收集时对不可读图片的容错。
 // 前置条件：在 t.TempDir 中生成一张有效二维码图片和一张无效图片，不依赖 ffmpeg。
 // 执行方式：按顺序收集两张图片，并记录进度回调参数。
@@ -233,7 +250,7 @@ func TestCollectPayloadsFromImages(t *testing.T) {
 	validPath := filepath.Join(dir, "frame_000001.png")
 	invalidPath := filepath.Join(dir, "frame_000002.png")
 	wantPayload := []byte("payload")
-	if err := core.EncodeMultiByteArraysToSinglePng([][]byte{wantPayload}, validPath, 240, 1, 1, 346, 346); err != nil {
+	if err := core.EncodeMultiByteArraysToSinglePng([][]byte{wantPayload}, validPath, 240, 1, 1, 346, 346, "L"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(invalidPath, []byte("not an image"), 0644); err != nil {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // VideoContext 封装 ffmpeg 查找、命令执行和临时帧目录管理所需的依赖。
@@ -46,12 +47,13 @@ func (ctx VideoContext) PrepareFramesDir(specified string, tempPrefix string, ke
 		return specified, func() {}, nil
 	}
 
-	// 自动目录由本次运行拥有，随机后缀可以避免并发任务发生目录冲突。
+	// 自动目录由本次运行拥有，毫秒级时间戳便于识别创建时间。
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return "", nil, E("获取当前工作目录失败", err)
 	}
-	tmp, err := os.MkdirTemp(workingDir, tempPrefix)
+	tmp := filepath.Join(workingDir, tempPrefix+strconv.FormatInt(time.Now().UnixMilli(), 10))
+	err = os.Mkdir(tmp, 0755)
 	if err != nil {
 		return "", nil, E("创建临时帧目录失败", err)
 	}

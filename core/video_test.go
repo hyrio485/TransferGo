@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -14,33 +15,23 @@ import (
 // 运行方式：在仓库根目录执行 go test ./...，或执行 go test ./core -run Video。
 // 文件影响：涉及当前目录的测试会先使用 t.Chdir 切换到 t.TempDir，测试结束后自动恢复并清理。
 
-// TestPrepareFramesDirCreatesUniqueDirectories 验证自动帧目录的唯一性和清理行为。
+// TestPrepareFramesDirUsesMillisecondTimestamp 验证自动帧目录的时间戳格式和清理行为。
 // 前置条件：测试当前目录已经切换到 t.TempDir。
-// 执行方式：连续创建两个自动目录，再分别调用返回的清理函数。
-// 期望结果：两个目录路径不同，清理后都不存在，仓库目录不产生文件。
-func TestPrepareFramesDirCreatesUniqueDirectories(t *testing.T) {
+// 执行方式：创建一个自动目录，再调用返回的清理函数。
+// 期望结果：目录名以毫秒时间戳结尾，清理后目录不存在。
+func TestPrepareFramesDirUsesMillisecondTimestamp(t *testing.T) {
 	t.Chdir(t.TempDir())
 	ctx := NewVideoContext()
-	first, cleanupFirst, err := ctx.PrepareFramesDir("", "transfergo-test-", false)
+	path, cleanup, err := ctx.PrepareFramesDir("", "transfergo-test-", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, cleanupSecond, err := ctx.PrepareFramesDir("", "transfergo-test-", false)
-	if err != nil {
-		cleanupFirst()
-		t.Fatal(err)
+	if matched := regexp.MustCompile(`^transfergo-test-\d{13}$`).MatchString(filepath.Base(path)); !matched {
+		t.Fatalf("temporary directory does not contain a milliseconds timestamp: %q", path)
 	}
-	if first == second {
-		cleanupFirst()
-		cleanupSecond()
-		t.Fatalf("temporary directories are equal: %q", first)
-	}
-	cleanupFirst()
-	cleanupSecond()
-	for _, path := range []string{first, second} {
-		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("temporary directory %q still exists: %v", path, err)
-		}
+	cleanup()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary directory %q still exists: %v", path, err)
 	}
 }
 

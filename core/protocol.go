@@ -10,6 +10,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -58,6 +60,8 @@ type Manifest struct {
 	fileName   string
 	fileSize   uint64
 	fileSHA256 [sha256.Size]byte
+	rows       uint16
+	cols       uint16
 }
 
 // FileName 返回清单中记录的原始文件名。
@@ -65,13 +69,14 @@ func (ctx Manifest) FileName() string {
 	return ctx.fileName
 }
 
-// NewManifest 根据文件元数据创建清单。
-func NewManifest(fileName string, fileSize uint64, fileSHA256 [sha256.Size]byte) Manifest {
-	return Manifest{
-		fileName:   fileName,
-		fileSize:   fileSize,
-		fileSHA256: fileSHA256,
-	}
+// Rows 返回每张图片中的二维码行数，旧版清单返回零。
+func (ctx Manifest) Rows() int {
+	return int(ctx.rows)
+}
+
+// Cols 返回每张图片中的二维码列数，旧版清单返回零。
+func (ctx Manifest) Cols() int {
+	return int(ctx.cols)
 }
 
 // transferFrame 表示一个尚未序列化或已经解析的协议帧。
@@ -91,9 +96,12 @@ type transferFrame struct {
 
 // EncodeFile 把文件内容编码为一个清单帧和若干按序编号的数据帧。
 // password 非空时，每个帧体都会使用同一派生密钥和独立随机 Nonce 进行 AES-GCM 加密。
-func (ctx ProtocolContext) EncodeFile(input []byte, fileName string, password string, chunkSize int) ([][]byte, error) {
+func (ctx ProtocolContext) EncodeFile(input []byte, fileName string, password string, chunkSize int, rows int, cols int) ([][]byte, error) {
 	if chunkSize <= 0 {
 		return nil, errors.New("单块数据大小必须大于 0")
+	}
+	if rows <= 0 || rows > int(^uint16(0)) || cols <= 0 || cols > int(^uint16(0)) {
+		return nil, errors.New("二维码网格行列数超出协议允许的范围")
 	}
 
 	chunkCount := uint64(0)
@@ -117,6 +125,8 @@ func (ctx ProtocolContext) EncodeFile(input []byte, fileName string, password st
 		fileName:   fileName,
 		fileSize:   uint64(len(input)),
 		fileSHA256: sha256.Sum256(input),
+		rows:       uint16(rows),
+		cols:       uint16(cols),
 	}
 
 	marshalledManifest, err := marshalManifest(manifest)
@@ -202,13 +212,15 @@ func marshalManifest(manifest Manifest) ([]byte, error) {
 		return nil, errors.New("文件清单中的原文件名过长")
 	}
 
-	out := make([]byte, 0, len(manifestMagic)+len(manifestPasswordCheck)+2+len(name)+8+sha256.Size)
+	out := make([]byte, 0, len(manifestMagic)+len(manifestPasswordCheck)+2+len(name)+8+sha256.Size+4)
 	out = append(out, []byte(manifestMagic)...)
 	out = append(out, manifestPasswordCheck...)
 	out = binary.BigEndian.AppendUint16(out, uint16(len(name)))
 	out = append(out, name...)
 	out = binary.BigEndian.AppendUint64(out, manifest.fileSize)
 	out = append(out, manifest.fileSHA256[:]...)
+	out = binary.BigEndian.AppendUint16(out, manifest.rows)
+	out = binary.BigEndian.AppendUint16(out, manifest.cols)
 	return out, nil
 }
 
@@ -256,11 +268,6 @@ func RestoreFile(payloads [][]byte, password string) (Manifest, []byte, error) {
 		frame, err := parseFrame(payload)
 		if err != nil {
 			return Manifest{}, nil, E("解析传输数据帧失败", err)
-		}
-		// 清单存在时可以立即拒绝不可能完整的载荷集合；清单缺失时继续收集，
-		// 让 restoreFromFrames 返回更明确的 missing manifest frame。
-		if frame.index == 0 && uint64(frame.total) > uint64(len(payloads)) {
-			return Manifest{}, nil, fmt.Errorf("协议声明共有 %d 个传输数据帧，但当前仅识别到 %d 个二维码载荷", frame.total, len(payloads))
 		}
 		if total == 0 {
 			total = frame.total
@@ -345,7 +352,8 @@ func unmarshalManifest(data []byte) (Manifest, error) {
 	if nameLen > maxFileNameLength {
 		return Manifest{}, errors.New("文件清单中的原文件名过长")
 	}
-	if len(data) != offset+nameLen+8+sha256.Size {
+	legacyLen := offset + nameLen + 8 + sha256.Size
+	if len(data) != legacyLen && len(data) != legacyLen+4 {
 		return Manifest{}, errors.New("文件清单中的原文件名长度与实际内容不一致")
 	}
 
@@ -355,7 +363,42 @@ func unmarshalManifest(data []byte) (Manifest, error) {
 	manifest.fileSize = binary.BigEndian.Uint64(data[offset : offset+8])
 	offset += 8
 	copy(manifest.fileSHA256[:], data[offset:offset+sha256.Size])
+	offset += sha256.Size
+	if len(data) == legacyLen+4 {
+		manifest.rows = binary.BigEndian.Uint16(data[offset : offset+2])
+		manifest.cols = binary.BigEndian.Uint16(data[offset+2 : offset+4])
+		if manifest.rows == 0 || manifest.cols == 0 {
+			return Manifest{}, errors.New("文件清单中的二维码网格行列数不能为 0")
+		}
+	}
 	return manifest, nil
+}
+
+// DecodeManifest 从已识别载荷中查找并解析文件清单。
+func DecodeManifest(payloads [][]byte, password string) (Manifest, error) {
+	for _, payload := range payloads {
+		frame, err := parseFrame(payload)
+		if err != nil || frame.index != 0 || frame.kind != frameKindManifest {
+			continue
+		}
+		plain := frame.body
+		if frame.flags&flagEncrypted != 0 {
+			if password == "" || len(frame.body) < saltSize+nonceSize {
+				return Manifest{}, errors.New("无法解密文件清单")
+			}
+			salt := frame.body[:saltSize]
+			gcm, err := makeGCM(password, salt)
+			if err != nil {
+				return Manifest{}, err
+			}
+			plain, err = decryptFrameBody(gcm, frame, frame.body[saltSize:], salt)
+			if err != nil {
+				return Manifest{}, errors.New("无法解密文件清单")
+			}
+		}
+		return unmarshalManifest(plain)
+	}
+	return Manifest{}, errors.New("没有找到文件清单帧")
 }
 
 // restoreFromFrames 校验完整帧集合，处理可选解密，并拼接、校验最终文件。
@@ -372,7 +415,13 @@ func restoreFromFrames(frames map[uint32]transferFrame, total uint32, password s
 		return Manifest{}, nil, errors.New("第 0 个传输数据帧不是文件清单帧")
 	}
 	if uint64(total) > uint64(len(frames)) {
-		return Manifest{}, nil, errors.New("缺少一个或多个传输数据帧，无法还原完整文件")
+		missing := make([]string, 0, 20)
+		for index := uint32(0); index < total && len(missing) < cap(missing); index++ {
+			if _, ok := frames[index]; !ok {
+				missing = append(missing, strconv.FormatUint(uint64(index), 10))
+			}
+		}
+		return Manifest{}, nil, fmt.Errorf("缺少传输数据帧，帧序号：%s（最多显示 20 个）", strings.Join(missing, "、"))
 	}
 	encrypted := manifestFrame.flags&flagEncrypted != 0
 

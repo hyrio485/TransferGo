@@ -29,16 +29,23 @@ func TestProtocolRoundTrip(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			payloads, err := NewProtocolContext().EncodeFile(test.input, "input.bin", test.password, test.chunkSize)
+			payloads, err := NewProtocolContext().EncodeFile(test.input, "input.bin", test.password, test.chunkSize, 3, 5)
 			if err != nil {
 				t.Fatal(err)
+			}
+			decodedManifest, err := DecodeManifest(payloads, test.password)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decodedManifest.Rows() != 3 || decodedManifest.Cols() != 5 {
+				t.Fatalf("decoded manifest grid = %d×%d", decodedManifest.Rows(), decodedManifest.Cols())
 			}
 			payloads = append(payloads, append([]byte{}, payloads[len(payloads)-1]...))
 			manifest, output, err := RestoreFile(payloads, test.password)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if manifest.FileName() != "input.bin" || !bytes.Equal(output, test.input) {
+			if manifest.FileName() != "input.bin" || manifest.Rows() != 3 || manifest.Cols() != 5 || !bytes.Equal(output, test.input) {
 				t.Fatalf("protocol round trip mismatch: manifest = %q, output = %q", manifest.FileName(), output)
 			}
 		})
@@ -50,7 +57,7 @@ func TestProtocolRoundTrip(t *testing.T) {
 // 执行方式：使用不同密码调用 RestoreFile。
 // 期望结果：还原在清单认证阶段失败，并返回 password check failed。
 func TestProtocolRejectsWrongPassword(t *testing.T) {
-	payloads, err := NewProtocolContext().EncodeFile([]byte("secret data"), "input.bin", "correct", 4)
+	payloads, err := NewProtocolContext().EncodeFile([]byte("secret data"), "input.bin", "correct", 4, 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,15 +70,15 @@ func TestProtocolRejectsWrongPassword(t *testing.T) {
 // TestProtocolRejectsMissingFrame 验证协议不会返回不完整文件。
 // 前置条件：生成包含多个数据帧的有效载荷集合。
 // 执行方式：删除中间一个数据帧后调用 RestoreFile。
-// 期望结果：还原失败，并报告载荷数量不足或存在缺帧。
+// 期望结果：还原失败，并报告缺失帧序号。
 func TestProtocolRejectsMissingFrame(t *testing.T) {
-	payloads, err := NewProtocolContext().EncodeFile([]byte("multiple chunks are required"), "input.bin", "", 4)
+	payloads, err := NewProtocolContext().EncodeFile([]byte("multiple chunks are required"), "input.bin", "", 4, 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	payloads = append(payloads[:2], payloads[3:]...)
 	_, _, err = RestoreFile(payloads, "")
-	if err == nil || (!strings.Contains(err.Error(), "当前仅识别到") && !strings.Contains(err.Error(), "缺少")) {
+	if err == nil || !strings.Contains(err.Error(), "帧序号：2") {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }
@@ -81,7 +88,7 @@ func TestProtocolRejectsMissingFrame(t *testing.T) {
 // 执行方式：删除零号清单帧后调用 RestoreFile。
 // 期望结果：还原失败，并明确报告 missing manifest frame。
 func TestProtocolRejectsMissingManifest(t *testing.T) {
-	payloads, err := NewProtocolContext().EncodeFile([]byte("manifest must be present"), "input.bin", "", 4)
+	payloads, err := NewProtocolContext().EncodeFile([]byte("manifest must be present"), "input.bin", "", 4, 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +103,7 @@ func TestProtocolRejectsMissingManifest(t *testing.T) {
 // 执行方式：修改复制帧的帧体后，把它作为同序号重复帧加入载荷集合。
 // 期望结果：RestoreFile 拒绝内容不同的重复帧并返回 conflicting duplicate frame。
 func TestProtocolRejectsConflictingDuplicate(t *testing.T) {
-	payloads, err := NewProtocolContext().EncodeFile([]byte("conflicting duplicate"), "input.bin", "", 4)
+	payloads, err := NewProtocolContext().EncodeFile([]byte("conflicting duplicate"), "input.bin", "", 4, 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +121,7 @@ func TestProtocolRejectsConflictingDuplicate(t *testing.T) {
 // 执行方式：修改一个数据帧的内容，但保持帧头和长度合法。
 // 期望结果：帧能够解析，但最终 SHA-256 不匹配，文件不会被返回。
 func TestProtocolDetectsTamperedPlaintext(t *testing.T) {
-	payloads, err := NewProtocolContext().EncodeFile([]byte("hash protected data"), "input.bin", "", 4)
+	payloads, err := NewProtocolContext().EncodeFile([]byte("hash protected data"), "input.bin", "", 4, 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +136,7 @@ func TestProtocolDetectsTamperedPlaintext(t *testing.T) {
 // TestRestoreFileRejectsImpossibleFrameTotal 验证恶意超大帧总数会被立即拒绝。
 // 前置条件：构造一个格式合法但 total 远大于载荷数量的清单帧。
 // 执行方式：仅把该帧传给 RestoreFile。
-// 期望结果：函数在进入按序号循环前返回错误，避免超长空转。
+// 期望结果：函数最多检查并报告前二十个缺失帧，避免超长空转。
 func TestRestoreFileRejectsImpossibleFrameTotal(t *testing.T) {
 	payload, err := marshalFrame(transferFrame{
 		kind:  frameKindManifest,
@@ -140,7 +147,7 @@ func TestRestoreFileRejectsImpossibleFrameTotal(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = RestoreFile([][]byte{payload}, "")
-	if err == nil || !strings.Contains(err.Error(), "当前仅识别到") {
+	if err == nil || !strings.Contains(err.Error(), "帧序号：1、2、3、4、5、6、7、8、9、10、11、12、13、14、15、16、17、18、19、20（最多显示 20 个）") {
 		t.Fatalf("RestoreFile() error = %v", err)
 	}
 }
@@ -180,14 +187,17 @@ func TestParseFrameRejectsInvalidHeaders(t *testing.T) {
 // 期望结果：所有输入都在生成协议帧前返回错误。
 func TestProtocolRejectsInvalidEncodeInput(t *testing.T) {
 	ctx := NewProtocolContext()
-	if _, err := ctx.EncodeFile([]byte("data"), "input.bin", "", 0); err == nil {
+	if _, err := ctx.EncodeFile([]byte("data"), "input.bin", "", 0, 3, 3); err == nil {
 		t.Fatal("EncodeFile accepted zero chunk size")
 	}
-	if _, err := ctx.EncodeFile([]byte("data"), "", "", 4); err == nil {
+	if _, err := ctx.EncodeFile([]byte("data"), "", "", 4, 3, 3); err == nil {
 		t.Fatal("EncodeFile accepted empty file name")
 	}
-	if _, err := ctx.EncodeFile([]byte("data"), strings.Repeat("a", maxFileNameLength+1), "", 4); err == nil {
+	if _, err := ctx.EncodeFile([]byte("data"), strings.Repeat("a", maxFileNameLength+1), "", 4, 3, 3); err == nil {
 		t.Fatal("EncodeFile accepted overlong file name")
+	}
+	if _, err := ctx.EncodeFile([]byte("data"), "input.bin", "", 4, 0, 3); err == nil {
+		t.Fatal("EncodeFile accepted zero rows")
 	}
 }
 

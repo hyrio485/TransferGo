@@ -101,8 +101,8 @@ func (app appContext) runEncode(args []string) error {
 		}
 	}
 
-	core.LogI("编码配置：输入文件=%q，输出视频=%q，帧率=%g，画面尺寸=%d×%d，二维码网格=%d×%d，单个二维码尺寸=%d 像素，单块数据=%d 字节，CRF=%d，并行处理=%s，加密=%s，覆盖已有文件=%s\n",
-		opt.Input, opt.Output, opt.FPS, opt.ImageWidth, opt.ImageHeight, opt.Rows, opt.Cols, opt.QRSize, opt.ChunkSize, opt.CRF, boolText(opt.Parallel), boolText(opt.Password != ""), boolText(opt.Replace))
+	core.LogI("编码配置：输入文件=%q，输出视频=%q，帧率=%g，画面尺寸=%d×%d，二维码网格=%d×%d，单个二维码尺寸=%d 像素，二维码纠错等级=%s，单块数据=%d 字节，CRF=%d，并行处理=%s，加密=%s，覆盖已有文件=%s\n",
+		opt.Input, opt.Output, opt.FPS, opt.ImageWidth, opt.ImageHeight, opt.Rows, opt.Cols, opt.QRSize, opt.QRErrorCorrection, opt.ChunkSize, opt.CRF, boolText(opt.Parallel), boolText(opt.Password != ""), boolText(opt.Replace))
 	core.LogI("正在读取输入文件：%s\n", opt.Input)
 	input, err := os.ReadFile(opt.Input)
 	if err != nil {
@@ -111,7 +111,7 @@ func (app appContext) runEncode(args []string) error {
 	core.LogI("输入文件读取完成：共 %d 字节\n", len(input))
 
 	core.LogI("正在把文件拆分为传输数据帧……\n")
-	payloads, err := app.protocol.EncodeFile(input, filepath.Base(opt.Input), opt.Password, opt.ChunkSize)
+	payloads, err := app.protocol.EncodeFile(input, filepath.Base(opt.Input), opt.Password, opt.ChunkSize, opt.Rows, opt.Cols)
 	if err != nil {
 		return core.E("生成传输数据帧失败", err)
 	}
@@ -139,8 +139,8 @@ func (app appContext) runEncode(args []string) error {
 	}
 
 	core.LogI("编码成功：%s → %s\n", opt.Input, opt.Output)
-	core.LogI("编码汇总：二维码总数=%d，视频画面数=%d，单块数据=%d 字节，二维码网格=%d×%d，帧率=%s，加密=%s\n",
-		len(payloads), renderedFrameCount(len(payloads), opt.Rows, opt.Cols), opt.ChunkSize, opt.Rows, opt.Cols, fmt.Sprintf("%g", opt.FPS), boolText(opt.Password != ""))
+	core.LogI("编码汇总：二维码总数=%d，视频画面数=%d，单块数据=%d 字节，二维码网格=%d×%d，帧率=%s，加密=%s，等效传输速率=%.2f KiB/s\n",
+		len(payloads), imageCount, opt.ChunkSize, opt.Rows, opt.Cols, fmt.Sprintf("%g", opt.FPS), boolText(opt.Password != ""), effectiveTransferRate(len(input), imageCount, opt.FPS))
 	if opt.Keep {
 		core.LogI("已保留编码过程中生成的 PNG 图片：%s\n", framesDir)
 	}
@@ -167,7 +167,7 @@ func (app appContext) writePayloadImages(payloads [][]byte, framesDir string, op
 
 	render := func(job payloadImageJob) error {
 		path := filepath.Join(framesDir, fmt.Sprintf("frame_%06d.png", job.index))
-		if err := core.EncodeMultiByteArraysToSinglePng(job.payloads, path, opt.QRSize, opt.Rows, opt.Cols, opt.ImageWidth, opt.ImageHeight); err != nil {
+		if err := core.EncodeMultiByteArraysToSinglePng(job.payloads, path, opt.QRSize, opt.Rows, opt.Cols, opt.ImageWidth, opt.ImageHeight, opt.QRErrorCorrection); err != nil {
 			return fmt.Errorf("生成第 %d 张二维码图片失败：%w", job.index, err)
 		}
 		return nil
@@ -228,6 +228,14 @@ func renderedFrameCount(payloadCount int, rows int, cols int) int {
 	return 1 + (payloadCount-1)/slots
 }
 
+// effectiveTransferRate 根据原始文件大小和视频播放时长计算等效传输速率。
+func effectiveTransferRate(fileSize int, frameCount int, fps float64) float64 {
+	if fileSize <= 0 || frameCount <= 0 || fps <= 0 {
+		return 0
+	}
+	return float64(fileSize) * fps / float64(frameCount) / 1024
+}
+
 // endregion
 
 // region Decode
@@ -242,8 +250,8 @@ func (app appContext) runDecode(args []string) error {
 	if requestedOutput == "" {
 		requestedOutput = "<使用视频清单中的原文件名>"
 	}
-	core.LogI("解码配置：输入视频=%q，输出文件=%q，抽帧率=%g，图片最长边限制=%d 像素，并行处理=%s，已提供密码=%s，覆盖已有文件=%s\n",
-		opt.Input, requestedOutput, opt.SampleFPS, opt.MaxFrameSize, boolText(opt.Parallel), boolText(opt.Password != ""), boolText(opt.Replace))
+	core.LogI("解码配置：输入视频=%q，输出文件=%q，抽帧率=%g，图片最长边限制=%d 像素，手动二维码网格=%d×%d，并行处理=%s，已提供密码=%s，覆盖已有文件=%s\n",
+		opt.Input, requestedOutput, opt.SampleFPS, opt.MaxFrameSize, opt.Rows, opt.Cols, boolText(opt.Parallel), boolText(opt.Password != ""), boolText(opt.Replace))
 
 	framesDir, cleanup, err := app.video.PrepareFramesDir(opt.FramesDir, "transfergo-decode-", opt.Keep)
 	if err != nil {
@@ -267,7 +275,25 @@ func (app appContext) runDecode(args []string) error {
 
 	workers := parallelWorkerCount(opt.Parallel, len(paths))
 	core.LogI("正在识别图片中的二维码：并行处理=%s，工作协程数=%d，图片最长边限制=%d 像素\n", boolText(opt.Parallel), workers, opt.MaxFrameSize)
-	payloads, stats, err := collectPayloadsFromImages(paths, opt.MaxFrameSize, opt.Parallel, app.commands.NewProgressPrinter("二维码图片识别进度"))
+	var payloads [][]byte
+	var stats payloadCollectionStats
+	if opt.Rows > 0 {
+		payloads, stats, err = collectPayloadsFromImagesWithGrid(paths, opt.MaxFrameSize, opt.Rows, opt.Cols, opt.Parallel, app.commands.NewProgressPrinter("二维码图片识别进度"))
+		if err == nil {
+			manifest, manifestErr := core.DecodeManifest(payloads, opt.Password)
+			if manifestErr == nil && manifest.Rows() > 0 && manifest.Cols() > 0 && (manifest.Rows() != opt.Rows || manifest.Cols() != opt.Cols) {
+				core.LogW("手动二维码网格 %d×%d 与文件清单中的 %d×%d 不一致，将继续使用手动参数\n", opt.Rows, opt.Cols, manifest.Rows(), manifest.Cols())
+			}
+		}
+	} else {
+		payloads, stats, err = collectPayloadsFromImages(paths, opt.MaxFrameSize, opt.Parallel, app.commands.NewProgressPrinter("二维码图片识别进度"))
+	}
+	if err == nil && opt.Rows == 0 {
+		manifest, manifestErr := core.DecodeManifest(payloads, opt.Password)
+		if manifestErr == nil && manifest.Rows() > 0 && manifest.Cols() > 0 {
+			payloads, stats, err = collectPayloadsFromImagesWithGrid(paths, opt.MaxFrameSize, manifest.Rows(), manifest.Cols(), opt.Parallel, nil)
+		}
+	}
 	core.LogI("二维码识别汇总：抽帧图片=%d 张，含二维码图片=%d 张，未发现二维码图片=%d 张，无法读取图片=%d 张，识别到的二维码载荷=%d 个，去重后载荷=%d 个，重复载荷=%d 个\n",
 		stats.TotalImages, stats.ImagesWithPayloads, stats.EmptyImages, stats.UnreadableImages, stats.PayloadCount, stats.UniquePayloadCount, stats.DuplicatePayloadCount)
 	if err != nil {
@@ -379,8 +405,20 @@ type payloadCollectionStats struct {
 // collectPayloadsFromImages 汇总所有图片中的二维码载荷，并统计识别结果。
 // 单张图片失败不会立即终止，因为其他抽帧图片可能包含同一批协议载荷。
 func collectPayloadsFromImages(paths []string, maxFrameSize int, parallel bool, progress func(done int, total int)) ([][]byte, payloadCollectionStats, error) {
+	return collectPayloadsFromImagesUsing(paths, parallel, progress, func(path string) ([][]byte, error) {
+		return core.DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, maxFrameSize)
+	})
+}
+
+func collectPayloadsFromImagesWithGrid(paths []string, maxFrameSize int, rows int, cols int, parallel bool, progress func(done int, total int)) ([][]byte, payloadCollectionStats, error) {
+	return collectPayloadsFromImagesUsing(paths, parallel, progress, func(path string) ([][]byte, error) {
+		return core.DecodeSinglePngToMultiByteArraysWithGrid(path, maxFrameSize, rows, cols)
+	})
+}
+
+func collectPayloadsFromImagesUsing(paths []string, parallel bool, progress func(done int, total int), decode func(path string) ([][]byte, error)) ([][]byte, payloadCollectionStats, error) {
 	if !parallel || len(paths) < 2 {
-		return collectPayloadsSequentially(paths, maxFrameSize, progress)
+		return collectPayloadsSequentially(paths, progress, decode)
 	}
 
 	type decodeJob struct {
@@ -399,7 +437,7 @@ func collectPayloadsFromImages(paths []string, maxFrameSize int, parallel bool, 
 	for range workerCount {
 		go func() {
 			for job := range jobs {
-				decoded, err := core.DecodeSinglePngToMultiByteArraysWithMaxFrameSize(job.path, maxFrameSize)
+				decoded, err := decode(job.path)
 				results <- decodeResult{index: job.index, payloads: decoded, err: err}
 			}
 		}()
@@ -440,12 +478,12 @@ func collectPayloadsFromImages(paths []string, maxFrameSize int, parallel bool, 
 }
 
 // collectPayloadsSequentially 按图片顺序串行解码，供关闭并行模式时使用。
-func collectPayloadsSequentially(paths []string, maxFrameSize int, progress func(done int, total int)) ([][]byte, payloadCollectionStats, error) {
+func collectPayloadsSequentially(paths []string, progress func(done int, total int), decode func(path string) ([][]byte, error)) ([][]byte, payloadCollectionStats, error) {
 	var payloads [][]byte
 	stats := payloadCollectionStats{TotalImages: len(paths)}
 
 	for i, path := range paths {
-		decodedPayloads, err := core.DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, maxFrameSize)
+		decodedPayloads, err := decode(path)
 		if err != nil {
 			stats.UnreadableImages++
 		} else {

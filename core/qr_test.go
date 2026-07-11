@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"encoding/hex"
 	"image"
 	"os"
 	"path/filepath"
@@ -13,6 +14,29 @@ import (
 // 运行方式：在仓库根目录执行 go test ./...，或执行 go test ./core -run QR。
 // 文件影响：所有 PNG 和无效样例都写入 t.TempDir，测试结束后由 Go 自动清理。
 
+// TestDecodeQRCodeImageInfo 解码指定图片中的二维码并打印载荷信息。
+// 前置条件：通过 QR_TEST_IMAGE 环境变量指定待解码图片路径。
+// 执行方式：运行 QR_TEST_IMAGE=图片路径 go test -v ./core -run TestDecodeQRCodeImageInfo。
+// 期望结果：逐个打印二维码载荷的字节数、文本和十六进制内容。
+func TestDecodeQRCodeImageInfo(t *testing.T) {
+	path := os.Getenv("QR_TEST_IMAGE")
+	if path == "" {
+		t.Skip("未设置 QR_TEST_IMAGE，跳过图片二维码信息打印")
+	}
+
+	payloads, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, defaultDecodeFrameSize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payloads) == 0 {
+		t.Fatal("图片中未识别到二维码")
+	}
+
+	for index, payload := range payloads {
+		t.Logf("二维码 %d：字节数=%d，文本=%q，十六进制=%s", index+1, len(payload), string(payload), hex.EncodeToString(payload))
+	}
+}
+
 // TestQRCodeBinaryRoundTrip 验证全部单字节取值都能经过二维码无损往返。
 // 前置条件：构造包含零至二百五十五全部字节值的内存载荷。
 // 执行方式：编码为临时 PNG，再从同一 PNG 解码。
@@ -23,7 +47,7 @@ func TestQRCodeBinaryRoundTrip(t *testing.T) {
 		input[i] = byte(i)
 	}
 	path := filepath.Join(t.TempDir(), "frame.png")
-	if err := EncodeMultiByteArraysToSinglePng([][]byte{input}, path, 300, 1, 1, 430, 430); err != nil {
+	if err := EncodeMultiByteArraysToSinglePng([][]byte{input}, path, 300, 1, 1, 430, 430, "L"); err != nil {
 		t.Fatal(err)
 	}
 	payloads, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, defaultDecodeFrameSize)
@@ -42,7 +66,7 @@ func TestQRCodeBinaryRoundTrip(t *testing.T) {
 func TestQRCodeMultiplePayloadsRoundTrip(t *testing.T) {
 	inputs := [][]byte{[]byte("one"), []byte("two"), []byte("three"), []byte("four")}
 	path := filepath.Join(t.TempDir(), "frame.png")
-	if err := EncodeMultiByteArraysToSinglePng(inputs, path, 200, 2, 2, 530, 530); err != nil {
+	if err := EncodeMultiByteArraysToSinglePng(inputs, path, 200, 2, 2, 530, 530, "M"); err != nil {
 		t.Fatal(err)
 	}
 	payloads, err := DecodeSinglePngToMultiByteArraysWithMaxFrameSize(path, defaultDecodeFrameSize)
@@ -91,7 +115,7 @@ func TestEncodeRejectsInvalidQRCodeOptions(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(dir, test.name+".png")
-			err := EncodeMultiByteArraysToSinglePng(test.payloads, path, test.qrSize, test.rows, test.cols, test.imageWidth, test.imageHeight)
+			err := EncodeMultiByteArraysToSinglePng(test.payloads, path, test.qrSize, test.rows, test.cols, test.imageWidth, test.imageHeight, "L")
 			if err == nil {
 				t.Fatalf("EncodeMultiByteArraysToSinglePng(%q) succeeded", test.name)
 			}
@@ -112,6 +136,7 @@ func TestEncodeRejectsQRCodeCropping(t *testing.T) {
 		1,
 		13,
 		13,
+		"L",
 	)
 	if err == nil || !strings.Contains(err.Error(), "尺寸 1 像素过小") {
 		t.Fatalf("EncodeMultiByteArraysToSinglePng() error = %v", err)

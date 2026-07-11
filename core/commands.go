@@ -7,19 +7,19 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"time"
 )
 
 const (
-	defaultFPS         = 3.0
-	defaultSampleFPS   = 9.0
-	defaultQRSize      = 175
-	defaultImageWidth  = 800
-	defaultImageHeight = 800
-	defaultRows        = 3
-	defaultCols        = 3
-	defaultChunkSize   = 240
-	defaultCRF         = 24
+	defaultFPS               = 3.0
+	defaultSampleFPS         = 9.0
+	defaultQRSize            = 175
+	defaultQRErrorCorrection = "L"
+	defaultRows              = 3
+	defaultCols              = 3
+	defaultChunkSize         = 240
+	defaultCRF               = 24
 )
 
 const usageText = `用法：
@@ -36,9 +36,10 @@ encode 参数：
   -ffmpeg <路径>           ffmpeg 可执行文件路径，默认依次使用 FFMPEG_PATH 和 PATH
   -frames-dir <目录>       生成的 PNG 帧目录，默认创建随机临时目录
   -fps <帧率>              输出视频帧率，默认 3
-  -qr-size <像素>          单个二维码尺寸，默认 240
-  -width <像素>            输出视频宽度，默认 800
-  -height <像素>           输出视频高度，默认 800
+  -qr-size <像素>          单个二维码尺寸，默认 175
+  -qr-error-correction <等级> 二维码纠错等级，可选 L、M、Q、H，默认 L
+  -width <像素>            输出视频宽度，默认根据列数和二维码尺寸自动计算
+  -height <像素>           输出视频高度，默认根据行数和二维码尺寸自动计算
   -rows <数量>             每个视频帧的二维码行数，默认 3
   -cols <数量>             每个视频帧的二维码列数，默认 3
   -chunk-size <字节>       每个数据二维码的明文字节数，默认 240
@@ -56,6 +57,8 @@ decode 参数：
   -frames-dir <目录>       抽取的 PNG 帧目录，默认创建随机临时目录
   -sample-fps <帧率>       解码抽帧率，默认 9
   -max-frame-size <像素>   解码帧最长边，范围为 1 至 16384，默认 2048
+  -rows <数量>             手动指定二维码行数，必须与 -cols 同时使用
+  -cols <数量>             手动指定二维码列数，必须与 -rows 同时使用
   -parallel <布尔值>       是否并行解码 PNG，默认 true
   -replace                 允许替换已有输出文件，默认关闭
   -keep-frames             保留抽取的 PNG 帧，默认关闭
@@ -75,22 +78,23 @@ func NewCommandContext() CommandContext {
 
 // EncodeOptions 描述 encode 命令支持的全部参数。
 type EncodeOptions struct {
-	Input       string
-	Output      string
-	Password    string
-	Ffmpeg      string
-	FramesDir   string
-	FPS         float64
-	QRSize      int
-	Rows        int
-	Cols        int
-	ImageWidth  int
-	ImageHeight int
-	ChunkSize   int
-	CRF         int
-	Parallel    bool
-	Replace     bool
-	Keep        bool
+	Input             string
+	Output            string
+	Password          string
+	Ffmpeg            string
+	FramesDir         string
+	FPS               float64
+	QRSize            int
+	QRErrorCorrection string
+	Rows              int
+	Cols              int
+	ImageWidth        int
+	ImageHeight       int
+	ChunkSize         int
+	CRF               int
+	Parallel          bool
+	Replace           bool
+	Keep              bool
 }
 
 // DecodeOptions 描述 decode 命令支持的全部参数。
@@ -102,6 +106,8 @@ type DecodeOptions struct {
 	FramesDir    string
 	SampleFPS    float64
 	MaxFrameSize int
+	Rows         int
+	Cols         int
 	Parallel     bool
 	Replace      bool
 	Keep         bool
@@ -113,15 +119,14 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 	fs.SetOutput(io.Discard)
 
 	opt := EncodeOptions{
-		FPS:         defaultFPS,
-		QRSize:      defaultQRSize,
-		Rows:        defaultRows,
-		Cols:        defaultCols,
-		ImageWidth:  defaultImageWidth,
-		ImageHeight: defaultImageHeight,
-		ChunkSize:   defaultChunkSize,
-		CRF:         defaultCRF,
-		Parallel:    true,
+		FPS:               defaultFPS,
+		QRSize:            defaultQRSize,
+		QRErrorCorrection: defaultQRErrorCorrection,
+		Rows:              defaultRows,
+		Cols:              defaultCols,
+		ChunkSize:         defaultChunkSize,
+		CRF:               defaultCRF,
+		Parallel:          true,
 	}
 	fs.StringVar(&opt.Input, "i", opt.Input, "输入文件")
 	fs.StringVar(&opt.Input, "in", opt.Input, "输入文件，等同于 -i")
@@ -133,6 +138,7 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 	fs.StringVar(&opt.FramesDir, "frames-dir", opt.FramesDir, "生成的 PNG 帧目录")
 	fs.Float64Var(&opt.FPS, "fps", opt.FPS, "视频帧率")
 	fs.IntVar(&opt.QRSize, "qr-size", opt.QRSize, "单个二维码尺寸")
+	fs.StringVar(&opt.QRErrorCorrection, "qr-error-correction", opt.QRErrorCorrection, "二维码纠错等级，可选 L、M、Q、H")
 	fs.IntVar(&opt.ImageWidth, "width", opt.ImageWidth, "输出画面宽度")
 	fs.IntVar(&opt.ImageHeight, "height", opt.ImageHeight, "输出画面高度")
 	fs.IntVar(&opt.Rows, "rows", opt.Rows, "每帧的二维码行数")
@@ -146,6 +152,12 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 	if err := fs.Parse(args); err != nil {
 		return EncodeOptions{}, E("编码参数格式不正确", err)
 	}
+	widthSpecified := false
+	heightSpecified := false
+	fs.Visit(func(f *flag.Flag) {
+		widthSpecified = widthSpecified || f.Name == "width"
+		heightSpecified = heightSpecified || f.Name == "height"
+	})
 	if fs.NArg() > 1 {
 		return EncodeOptions{}, errors.New("encode 命令只能指定一个输入文件")
 	}
@@ -158,11 +170,35 @@ func (ctx CommandContext) ParseEncodeOptions(args []string) (EncodeOptions, erro
 	if opt.QRSize <= 0 {
 		return EncodeOptions{}, errors.New("-qr-size 必须大于 0")
 	}
+	opt.QRErrorCorrection = strings.ToUpper(opt.QRErrorCorrection)
+	if !isValidQRErrorCorrection(opt.QRErrorCorrection) {
+		return EncodeOptions{}, errors.New("-qr-error-correction 必须是 L、M、Q、H 之一")
+	}
 	if opt.Rows <= 0 {
 		return EncodeOptions{}, errors.New("-rows 必须大于 0")
 	}
 	if opt.Cols <= 0 {
 		return EncodeOptions{}, errors.New("-cols 必须大于 0")
+	}
+	if !widthSpecified {
+		var ok bool
+		opt.ImageWidth, ok = qrGridDimension(opt.Cols, opt.QRSize)
+		if !ok {
+			return EncodeOptions{}, errors.New("-cols 与 -qr-size 的组合过大，无法计算视频宽度")
+		}
+		if opt.ImageWidth%2 != 0 {
+			opt.ImageWidth++
+		}
+	}
+	if !heightSpecified {
+		var ok bool
+		opt.ImageHeight, ok = qrGridDimension(opt.Rows, opt.QRSize)
+		if !ok {
+			return EncodeOptions{}, errors.New("-rows 与 -qr-size 的组合过大，无法计算视频高度")
+		}
+		if opt.ImageHeight%2 != 0 {
+			opt.ImageHeight++
+		}
 	}
 	if opt.ImageWidth <= 0 {
 		return EncodeOptions{}, errors.New("-width 必须大于 0")
@@ -224,6 +260,8 @@ func (ctx CommandContext) ParseDecodeOptions(args []string) (DecodeOptions, erro
 	fs.StringVar(&opt.FramesDir, "frames-dir", opt.FramesDir, "抽取的 PNG 帧目录")
 	fs.Float64Var(&opt.SampleFPS, "sample-fps", opt.SampleFPS, "解码时每秒抽取的图片数")
 	fs.IntVar(&opt.MaxFrameSize, "max-frame-size", opt.MaxFrameSize, "解码图片最长边限制")
+	fs.IntVar(&opt.Rows, "rows", opt.Rows, "手动指定每张图片中的二维码行数")
+	fs.IntVar(&opt.Cols, "cols", opt.Cols, "手动指定每张图片中的二维码列数")
 	fs.BoolVar(&opt.Parallel, "parallel", opt.Parallel, "是否并行识别 PNG 图片")
 	fs.BoolVar(&opt.Replace, "replace", opt.Replace, "是否覆盖已有输出文件")
 	fs.BoolVar(&opt.Keep, "keep-frames", opt.Keep, "是否保留抽取的 PNG 图片")
@@ -248,6 +286,15 @@ func (ctx CommandContext) ParseDecodeOptions(args []string) (DecodeOptions, erro
 	}
 	if opt.MaxFrameSize <= 0 || opt.MaxFrameSize > maxImageDimension {
 		return DecodeOptions{}, fmt.Errorf("-max-frame-size 必须在 1 至 %d 之间", maxImageDimension)
+	}
+	if (opt.Rows == 0) != (opt.Cols == 0) {
+		return DecodeOptions{}, errors.New("-rows 与 -cols 必须同时指定")
+	}
+	if opt.Rows < 0 || opt.Rows > maxImageDimension {
+		return DecodeOptions{}, fmt.Errorf("-rows 必须在 1 至 %d 之间，或不指定", maxImageDimension)
+	}
+	if opt.Cols < 0 || opt.Cols > maxImageDimension {
+		return DecodeOptions{}, fmt.Errorf("-cols 必须在 1 至 %d 之间，或不指定", maxImageDimension)
 	}
 	return opt, nil
 }

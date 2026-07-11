@@ -21,17 +21,18 @@ func TestParseEncodeOptionsDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := EncodeOptions{
-		Input:       "input.bin",
-		Output:      "input.bin.mp4",
-		FPS:         defaultFPS,
-		QRSize:      defaultQRSize,
-		Rows:        defaultRows,
-		Cols:        defaultCols,
-		ImageWidth:  defaultImageWidth,
-		ImageHeight: defaultImageHeight,
-		ChunkSize:   defaultChunkSize,
-		CRF:         defaultCRF,
-		Parallel:    true,
+		Input:             "input.bin",
+		Output:            "input.bin.mp4",
+		FPS:               defaultFPS,
+		QRSize:            defaultQRSize,
+		QRErrorCorrection: defaultQRErrorCorrection,
+		Rows:              defaultRows,
+		Cols:              defaultCols,
+		ImageWidth:        666,
+		ImageHeight:       666,
+		ChunkSize:         defaultChunkSize,
+		CRF:               defaultCRF,
+		Parallel:          true,
 	}
 	if got != want {
 		t.Fatalf("ParseEncodeOptions() = %+v, want %+v", got, want)
@@ -52,7 +53,8 @@ func TestParseEncodeOptionsAliases(t *testing.T) {
 		"-frames-dir", "frames",
 		"-fps", "4.5",
 		"-qr-size", "200",
-		"-width", "1010",
+		"-qr-error-correction", "q",
+		"-width", "1040",
 		"-height", "800",
 		"-rows", "2",
 		"-cols", "4",
@@ -67,7 +69,7 @@ func TestParseEncodeOptionsAliases(t *testing.T) {
 	}
 	if got.Input != "input.bin" || got.Output != "output.mp4" || got.Password != "secret" ||
 		got.Ffmpeg != "/path/to/ffmpeg" || got.FramesDir != "frames" || got.FPS != 4.5 ||
-		got.QRSize != 200 || got.ImageWidth != 1010 || got.ImageHeight != 800 ||
+		got.QRSize != 200 || got.QRErrorCorrection != "Q" || got.ImageWidth != 1040 || got.ImageHeight != 800 ||
 		got.Rows != 2 || got.Cols != 4 || got.ChunkSize != 128 || got.CRF != 20 || got.Parallel ||
 		!got.Replace || !got.Keep {
 		t.Fatalf("unexpected encode options: %+v", got)
@@ -89,12 +91,15 @@ func TestParseEncodeOptionsRejectsInvalidValues(t *testing.T) {
 		{name: "input conflict", args: []string{"-i", "input", "extra"}},
 		{name: "multiple positional arguments", args: []string{"input", "extra"}},
 		{name: "zero QR size", args: []string{"-i", "input", "-o", "output", "-qr-size", "0"}},
+		{name: "invalid QR error correction", args: []string{"-i", "input", "-o", "output", "-qr-error-correction", "X"}},
 		{name: "zero rows", args: []string{"-i", "input", "-o", "output", "-rows", "0"}},
 		{name: "zero cols", args: []string{"-i", "input", "-o", "output", "-cols", "0"}},
+		{name: "zero width", args: []string{"-i", "input", "-o", "output", "-width", "0"}},
+		{name: "zero height", args: []string{"-i", "input", "-o", "output", "-height", "0"}},
 		{name: "odd width", args: []string{"-i", "input", "-o", "output", "-width", "799"}},
 		{name: "odd height", args: []string{"-i", "input", "-o", "output", "-height", "799"}},
-		{name: "rows do not fit", args: []string{"-i", "input", "-o", "output", "-rows", "4"}},
-		{name: "cols do not fit", args: []string{"-i", "input", "-o", "output", "-cols", "4"}},
+		{name: "rows do not fit", args: []string{"-i", "input", "-o", "output", "-rows", "4", "-height", "800"}},
+		{name: "cols do not fit", args: []string{"-i", "input", "-o", "output", "-cols", "4", "-width", "800"}},
 		{name: "row gap is too small", args: []string{"-i", "input", "-o", "output", "-qr-size", "200", "-rows", "2", "-cols", "1", "-width", "280", "-height", "519"}},
 		{name: "column gap is too small", args: []string{"-i", "input", "-o", "output", "-qr-size", "200", "-rows", "1", "-cols", "2", "-width", "518", "-height", "280"}},
 		{name: "zero FPS", args: []string{"-i", "input", "-o", "output", "-fps", "0"}},
@@ -115,7 +120,7 @@ func TestParseEncodeOptionsRejectsInvalidValues(t *testing.T) {
 }
 
 // TestParseEncodeOptionsAcceptsMinimumQRCodeGap 验证刚好保留最小间距的画布可以通过校验。
-// 前置条件：使用二百像素二维码和二乘二网格，横纵尺寸均为五百三十像素。
+// 前置条件：使用二百像素二维码和二乘二网格，横纵尺寸均为五百二十像素。
 // 执行方式：解析包含完整尺寸参数的 encode 命令。
 // 期望结果：参数解析成功，不会把合法临界值误判为越界。
 func TestParseEncodeOptionsAcceptsMinimumQRCodeGap(t *testing.T) {
@@ -126,11 +131,28 @@ func TestParseEncodeOptionsAcceptsMinimumQRCodeGap(t *testing.T) {
 		"-qr-size", "200",
 		"-rows", "2",
 		"-cols", "2",
-		"-width", "530",
-		"-height", "530",
+		"-width", "520",
+		"-height", "520",
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestParseEncodeOptionsCalculatesVideoSize 验证未指定长宽时按二维码网格自动计算视频尺寸。
+func TestParseEncodeOptionsCalculatesVideoSize(t *testing.T) {
+	ctx := NewCommandContext()
+	got, err := ctx.ParseEncodeOptions([]string{
+		"-qr-size", "250",
+		"-rows", "3",
+		"-cols", "4",
+		"input.bin",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ImageWidth != 1250 || got.ImageHeight != 950 {
+		t.Fatalf("video size = %d×%d, want 1250×950", got.ImageWidth, got.ImageHeight)
 	}
 }
 
@@ -156,6 +178,8 @@ func TestParseDecodeOptions(t *testing.T) {
 		"-frames-dir", "frames",
 		"-sample-fps", "12.5",
 		"-max-frame-size", "3072",
+		"-rows", "3",
+		"-cols", "5",
 		"-parallel=false",
 		"-replace",
 		"-keep-frames",
@@ -164,7 +188,7 @@ func TestParseDecodeOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Input != "input.mp4" || got.Output != "output.bin" || got.Password != "secret" ||
-		got.Ffmpeg != "/path/to/ffmpeg" || got.FramesDir != "frames" || got.SampleFPS != 12.5 || got.MaxFrameSize != 3072 ||
+		got.Ffmpeg != "/path/to/ffmpeg" || got.FramesDir != "frames" || got.SampleFPS != 12.5 || got.MaxFrameSize != 3072 || got.Rows != 3 || got.Cols != 5 ||
 		got.Parallel || !got.Replace || !got.Keep {
 		t.Fatalf("unexpected decode options: %+v", got)
 	}
@@ -181,6 +205,10 @@ func TestParseDecodeOptions(t *testing.T) {
 		{name: "infinite sample FPS", args: []string{"-i", "input", "-sample-fps", "+Inf"}},
 		{name: "zero max frame size", args: []string{"-i", "input", "-max-frame-size", "0"}},
 		{name: "large max frame size", args: []string{"-i", "input", "-max-frame-size", "16385"}},
+		{name: "rows without cols", args: []string{"-i", "input", "-rows", "3"}},
+		{name: "cols without rows", args: []string{"-i", "input", "-cols", "5"}},
+		{name: "negative rows", args: []string{"-i", "input", "-rows", "-1", "-cols", "5"}},
+		{name: "large cols", args: []string{"-i", "input", "-rows", "3", "-cols", "16385"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -205,12 +233,12 @@ func TestUsageListsEveryCommandOption(t *testing.T) {
 
 	encodeOptions := []string{
 		"<文件>", "-i、-in", "-o、-out", "-p、-password", "-ffmpeg", "-frames-dir",
-		"-fps", "-qr-size", "-width", "-height", "-rows", "-cols",
+		"-fps", "-qr-size", "-qr-error-correction", "-width", "-height", "-rows", "-cols",
 		"-chunk-size", "-crf", "-parallel", "-replace", "-keep-frames",
 	}
 	decodeOptions := []string{
 		"<视频>", "-i、-in", "-o、-out", "-p、-password", "-ffmpeg", "-frames-dir",
-		"-sample-fps", "-max-frame-size", "-parallel", "-replace", "-keep-frames",
+		"-sample-fps", "-max-frame-size", "-rows", "-cols", "-parallel", "-replace", "-keep-frames",
 	}
 
 	for _, option := range encodeOptions {
